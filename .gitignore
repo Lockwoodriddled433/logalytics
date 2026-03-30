@@ -1,1 +1,6 @@
 html/data.json
+*.log
+*.tmp
+*.conf
+.DS_Store
+.env

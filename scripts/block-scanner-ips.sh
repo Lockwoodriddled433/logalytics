@@ -14,13 +14,23 @@ LOG="${LOG:-/var/log/block-scanner-ips.log}"
 ABUSEIPDB_KEY_FILE="${ABUSEIPDB_KEY_FILE:-/etc/abuseipdb.key}"
 ABUSEIPDB_LOG="${ABUSEIPDB_LOG:-/var/log/abuseipdb-reports.log}"
 
-
 [ -f "$DATA_JSON" ] || { echo "$(date -Iseconds) ERROR: $DATA_JSON not found" >> "$LOG"; exit 1; }
 
+# Pass API key to Python via env
+if [ -f "$ABUSEIPDB_KEY_FILE" ]; then
+    export ABUSEIPDB_KEY=$(cat "$ABUSEIPDB_KEY_FILE" | tr -d '[:space:]')
+fi
+
 RESULTS=$(python3 - "$DATA_JSON" "$IPSET_ABUSIVE" "$IPSET_SCANNERS" <<'PYEOF'
-import json, re, sys, subprocess, ipaddress
+import json, re, sys, subprocess, ipaddress, os, tempfile, time
+import urllib.request, urllib.parse
 
 data_path, ipset_abusive, ipset_scanners = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# AbuseIPDB key (optional, passed via env)
+ABUSEIPDB_KEY = os.environ.get('ABUSEIPDB_KEY', '')
+ABUSE_SCORE_THRESHOLD = 75   # minimum abuse confidence score (%)
+ABUSE_REPORT_THRESHOLD = 10  # minimum number of reports from distinct users
 
 MALICIOUS_PATHS = [
     r'/wp-admin', r'/wp-login', r'/wp-content', r'/wp-json', r'/wp-config', r'/xmlrpc\.php',
@@ -103,9 +113,38 @@ for s in data.get('sessions', []):
             reportable.setdefault(ip, set()).update(s.get('path_summary', []))
             break
 
-# Add to abusive_ips
+# Check uncategorized IPs against AbuseIPDB
 result = subprocess.run(['ipset', 'list', ipset_abusive], capture_output=True, text=True)
 existing = {line.strip() for line in result.stdout.splitlines() if line.strip() and line.strip()[0].isdigit()}
+
+all_seen_ips = set()
+for s in data.get('sessions', []):
+    ip = s.get('origin_ip', '')
+    if ':' not in ip and ip not in IGNORE_IPS:
+        all_seen_ips.add(ip)
+unknown_ips = all_seen_ips - block_ips - scanner_ips - existing
+
+abuse_blocked = 0
+if ABUSEIPDB_KEY and unknown_ips:
+    for ip in list(unknown_ips)[:50]:  # cap at 50 lookups per run (free tier: 1000/day)
+        try:
+            req = urllib.request.Request(
+                f'https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90',
+                headers={'Key': ABUSEIPDB_KEY, 'Accept': 'application/json'}
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            d = json.loads(resp.read()).get('data', {})
+            score = d.get('abuseConfidenceScore', 0)
+            reports = d.get('totalReports', 0)
+            if score >= ABUSE_SCORE_THRESHOLD and reports >= ABUSE_REPORT_THRESHOLD:
+                block_ips.add(ip)
+                reportable.setdefault(ip, set()).add(f'AbuseIPDB score: {score}% ({reports} reports)')
+                abuse_blocked += 1
+            time.sleep(0.1)
+        except Exception:
+            pass
+
+# Add to abusive_ips
 new_abusive = block_ips - existing
 for ip in new_abusive:
     subprocess.run(['ipset', 'add', ipset_abusive, ip], capture_output=True)
@@ -120,18 +159,18 @@ for ip in scanner_ips:
 
 # Write reportable IPs (new ones only) to temp file for AbuseIPDB
 new_reportable = {ip: list(paths) for ip, paths in reportable.items() if ip in new_abusive}
-import tempfile, os
 report_file = os.path.join(tempfile.gettempdir(), 'abuseipdb_report.json')
 with open(report_file, 'w') as f:
     json.dump(new_reportable, f)
 
-print(f"{len(new_abusive)} {new_scanner} {len(new_reportable)}")
+print(f"{len(new_abusive)} {new_scanner} {len(new_reportable)} {abuse_blocked}")
 PYEOF
 )
 
 NEW_ABUSIVE=$(echo "$RESULTS" | awk '{print $1}')
 NEW_SCANNER=$(echo "$RESULTS" | awk '{print $2}')
 NEW_REPORTABLE=$(echo "$RESULTS" | awk '{print $3}')
+ABUSE_CHECKED=$(echo "$RESULTS" | awk '{print $4}')
 
 CHANGED=0
 if [ "$NEW_ABUSIVE" -gt 0 ] 2>/dev/null; then
@@ -144,9 +183,9 @@ if [ "$NEW_SCANNER" -gt 0 ] 2>/dev/null; then
 fi
 
 if [ "$CHANGED" -eq 1 ]; then
-    echo "$(date -Iseconds) Blocked $NEW_ABUSIVE abusive + $NEW_SCANNER scanner IPs" >> "$LOG"
+    echo "$(date -Iseconds) Blocked $NEW_ABUSIVE abusive + $NEW_SCANNER scanner + $ABUSE_CHECKED via AbuseIPDB" >> "$LOG"
 else
-    echo "$(date -Iseconds) No new IPs to block" >> "$LOG"
+    echo "$(date -Iseconds) No new IPs to block (AbuseIPDB flagged: $ABUSE_CHECKED)" >> "$LOG"
 fi
 
 # --- AbuseIPDB Reporting ---
