@@ -281,6 +281,36 @@ The dashboard is data-source agnostic. You can generate `data.json` from any web
 5. Identify notable organizations via rDNS and ASN lookup
 6. Output the JSON structure above
 
+### MaxMind GeoIP Enrichment
+
+If you are building your own parser in Python, we recommend using the free [GeoLite2 databases](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). You will need the `geoip2` Python library to read these databases.
+
+**Dependencies:**
+```bash
+pip install geoip2
+```
+
+**Example Implementation:**
+```python
+import geoip2.database
+
+with geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb') as city_db, \
+     geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-ASN.mmdb') as asn_db:
+    
+    city_response = city_db.city("203.0.113.42")
+    asn_response = asn_db.asn("203.0.113.42")
+    
+    geo_data = {
+        "city": city_response.city.name,
+        "country": city_response.country.name,
+        "country_code": city_response.country.iso_code,
+        "asn": asn_response.autonomous_system_number,
+        "asn_name": asn_response.autonomous_system_organization,
+        "lat": city_response.location.latitude,
+        "lon": city_response.location.longitude
+    }
+```
+
 ## Dependencies
 
 All loaded from CDN (no `npm install` required):
