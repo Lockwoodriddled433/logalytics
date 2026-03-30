@@ -6,12 +6,13 @@ Real-time web traffic analysis dashboard with geographic visualization, traffic 
 
 ## Features
 
-- **Interactive Map** -- Leaflet-based world map with per-session markers color-coded by traffic type
+- **Interactive Map** -- Leaflet-based world map with per-session markers color-coded by traffic type, blocked country overlays with "BLOCKED" labels
 - **Traffic Classification** -- Automatic categorization into legitimate, cloud, hosting, bot, and malicious traffic
 - **Scanner Detection** -- Pattern-matching engine flags requests to well-known exploit paths (WordPress probing, `.env` harvesting, path traversal, PHP shells)
-- **Notable Organizations** -- Identifies visitors by rDNS and ASN, grouped into cloud providers vs other hosting
-- **Country Blocking Overlay** -- Visual overlay on the map for blocked countries with per-country IP and request stats
-- **Live Feed** -- Scrollable real-time traffic table with IP reputation links
+- **Notable Organizations** -- Identifies visitors by rDNS and ASN, grouped into cloud providers vs other hosting, with location data and Google search links in the pop-out modal
+- **Country Drill-Down** -- Click any country in the country report modal to expand a full IP table with traffic type, request count, last seen timestamp, and requested paths
+- **Blocked IP Indicators** -- `GEO-BLK` and `IP-BLK` badges throughout the live feed, map popups, and country reports for at-a-glance block verification
+- **Live Feed** -- Scrollable traffic table with full date+time stamps, IP reputation links, and blocked status indicators
 - **Playback** -- Timeline scrubber with adjustable speed to replay traffic patterns
 
 ## Quick Start
@@ -28,17 +29,22 @@ python3 -m http.server 8080
 # Open http://localhost:8080
 ```
 
-The dashboard expects a `data.json` file in the `html/` directory. See [Data Format](#data-format) below.
+The dashboard expects a `data.json` file in the `html/` directory. A `data.sample.json` is included for reference. Copy it to get started:
+
+```bash
+cp html/data.sample.json html/data.json
+```
 
 ## Architecture
 
 ```
 html/
   index.html          # Dashboard shell, modals, Leaflet/Chart.js setup
-  app.js              # All application logic (~600 lines)
+  app.js              # All application logic
   styles.css          # Dark theme styles
   countries.geojson   # World borders for blocked country overlay
   data.json           # Session data (gitignored, you provide this)
+  data.sample.json    # Example data with RFC 5737 documentation IPs
 ```
 
 Zero backend dependencies. The dashboard is a static site that reads a single JSON file.
@@ -96,8 +102,8 @@ Organizations identified by rDNS or ASN:
 ```
 
 Label prefixes determine categorization:
-- `RDNS:` -- reverse DNS identified
-- `ASN:` -- ASN-based identification
+- `RDNS:` -- reverse DNS identified (displayed with location, linked to Google search for the IP)
+- `ASN:` -- ASN-based identification (grouped into cloud providers vs other hosting, linked to Google search for the ASN)
 - `Verified Actor:` -- confirmed bot identity (filtered from display)
 
 ### `summary` (object)
@@ -119,10 +125,10 @@ All configuration is in `app.js` constants at the top of the file:
 
 | Constant | Purpose |
 |----------|---------|
-| `BLOCKED_COUNTRIES` | ISO country codes shown as blocked on the map |
-| `CLOUD_PROVIDERS` | ASN-to-provider mapping for grouping notable orgs |
-| `IGNORED_RDNS` | rDNS domains to exclude from notables (scanners) |
-| `MALICIOUS_PATHS` | Regex patterns that flag sessions as malicious |
+| `BLOCKED_COUNTRIES` | ISO country codes shown as blocked on the map and flagged in all views |
+| `CLOUD_PROVIDERS` | ASN-to-provider mapping for grouping notables (Amazon, Google, Microsoft, Cloudflare, DigitalOcean, Akamai, OVH, Hetzner, Contabo, Alibaba) |
+| `IGNORED_RDNS` | rDNS domains excluded from notables (e.g. `censys-scanner.com`, `internet-measurement.com`) |
+| `MALICIOUS_PATHS` | Regex patterns that flag sessions as malicious regardless of source |
 | `TRAFFIC_COLORS` | Color scheme for traffic type categories |
 
 ## Traffic Types
@@ -135,6 +141,29 @@ All configuration is in `app.js` constants at the top of the file:
 | Bot | Amber `#ffaa00` | `geo.is_bot` is true |
 | Malicious | Red `#f43f5e` | `is_malicious` or hits scanner path patterns |
 
+## Blocked IP Indicators
+
+The dashboard shows two types of block badges:
+
+| Badge | Meaning |
+|-------|---------|
+| `GEO-BLK` | IP is from a country in the `BLOCKED_COUNTRIES` list |
+| `IP-BLK` | IP is individually flagged as malicious (scanner paths, known attacker) |
+| `BLK` | Shown in country reports for blocked countries |
+
+These appear in the live feed, map popups, and country detail tables. Useful for verifying that firewall rules (ipset, iptables, nginx) are functioning correctly.
+
+## Integration with IP Blocking
+
+The dashboard is designed to work alongside server-side IP blocking. A companion script (`block-scanner-ips.sh`) can consume `data.json` to automatically:
+
+1. Add malicious IPs to an `abusive_ips` ipset
+2. Add scanner network ranges to a `scanner_nets` ipset
+3. Block IPs from geo-blocked countries (including CDN-proxied traffic)
+4. Persist rules across reboots
+
+See the companion blocking script for implementation details.
+
 ## Generating data.json
 
 The dashboard is data-source agnostic. You can generate `data.json` from any web server log format. A typical pipeline:
@@ -143,7 +172,8 @@ The dashboard is data-source agnostic. You can generate `data.json` from any web
 2. Enrich IPs with GeoIP and ASN data (MaxMind, ipinfo.io, etc.)
 3. Cluster requests by IP into sessions
 4. Classify intent (bot detection, rate analysis)
-5. Output the JSON structure above
+5. Identify notable organizations via rDNS and ASN lookup
+6. Output the JSON structure above
 
 ## Dependencies
 
