@@ -10,6 +10,8 @@ IPSET_SCANNERS="scanner_nets"
 PERSIST_ABUSIVE="/etc/ipset-abusive.conf"
 PERSIST_SCANNERS="/etc/ipset-scanners.conf"
 LOG="/var/log/block-scanner-ips.log"
+ABUSEIPDB_KEY_FILE="/etc/abuseipdb.key"
+ABUSEIPDB_LOG="/var/log/abuseipdb-reports.log"
 
 [ -f "$DATA_JSON" ] || { echo "$(date -Iseconds) ERROR: $DATA_JSON not found" >> "$LOG"; exit 1; }
 
@@ -63,6 +65,9 @@ with open(data_path) as f:
 
 block_ips = set()
 scanner_ips = set()
+reportable = {}  # ip -> set of malicious paths (for AbuseIPDB)
+
+IGNORE_IPS = {'::1', '127.0.0.1', '0.0.0.0'}
 
 # Identify scanner IPs from notable rDNS
 for n in data.get('notable', []):
@@ -74,7 +79,7 @@ for n in data.get('notable', []):
 # Identify malicious IPs from sessions
 for s in data.get('sessions', []):
     ip = s.get('origin_ip', '')
-    if ':' in ip:
+    if ':' in ip or ip in IGNORE_IPS:
         continue
     # Check rDNS hostname for known scanners
     hostname = (s.get('geo', {}).get('hostname') or '').lower()
@@ -88,10 +93,12 @@ for s in data.get('sessions', []):
         continue
     if s.get('is_malicious', False):
         block_ips.add(ip)
+        reportable.setdefault(ip, set()).update(s.get('path_summary', []))
         continue
     for p in s.get('path_summary', []):
         if is_scanner_path(p):
             block_ips.add(ip)
+            reportable.setdefault(ip, set()).update(s.get('path_summary', []))
             break
 
 # Add to abusive_ips
@@ -109,12 +116,20 @@ for ip in scanner_ips:
         subprocess.run(['ipset', 'add', ipset_scanners, ip], capture_output=True)
         new_scanner += 1
 
-print(f"{len(new_abusive)} {new_scanner}")
+# Write reportable IPs (new ones only) to temp file for AbuseIPDB
+new_reportable = {ip: list(paths) for ip, paths in reportable.items() if ip in new_abusive}
+import tempfile, os
+report_file = os.path.join(tempfile.gettempdir(), 'abuseipdb_report.json')
+with open(report_file, 'w') as f:
+    json.dump(new_reportable, f)
+
+print(f"{len(new_abusive)} {new_scanner} {len(new_reportable)}")
 PYEOF
 )
 
 NEW_ABUSIVE=$(echo "$RESULTS" | awk '{print $1}')
 NEW_SCANNER=$(echo "$RESULTS" | awk '{print $2}')
+NEW_REPORTABLE=$(echo "$RESULTS" | awk '{print $3}')
 
 CHANGED=0
 if [ "$NEW_ABUSIVE" -gt 0 ] 2>/dev/null; then
@@ -130,4 +145,66 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "$(date -Iseconds) Blocked $NEW_ABUSIVE abusive + $NEW_SCANNER scanner IPs" >> "$LOG"
 else
     echo "$(date -Iseconds) No new IPs to block" >> "$LOG"
+fi
+
+# --- AbuseIPDB Reporting ---
+REPORT_FILE="/tmp/abuseipdb_report.json"
+if [ -f "$ABUSEIPDB_KEY_FILE" ] && [ -f "$REPORT_FILE" ] && [ "$NEW_REPORTABLE" -gt 0 ] 2>/dev/null; then
+    ABUSEIPDB_KEY=$(cat "$ABUSEIPDB_KEY_FILE")
+    REPORTED=0
+
+    python3 - "$REPORT_FILE" "$ABUSEIPDB_KEY" "$ABUSEIPDB_LOG" <<'PYEOF'
+import json, sys, urllib.request, urllib.parse, time
+
+report_file, api_key, log_file = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# AbuseIPDB categories:
+# 14 = Port Scan, 21 = Web App Attack, 19 = Ping of Death (scanner)
+CATEGORIES = "14,21"
+
+with open(report_file) as f:
+    reportable = json.load(f)
+
+reported = 0
+for ip, paths in reportable.items():
+    comment = f"Automated: web scanner probing exploit paths: {', '.join(paths[:5])}"
+    if len(comment) > 1024:
+        comment = comment[:1021] + "..."
+
+    data = urllib.parse.urlencode({
+        'ip': ip,
+        'categories': CATEGORIES,
+        'comment': comment,
+    }).encode()
+
+    req = urllib.request.Request(
+        'https://api.abuseipdb.com/api/v2/report',
+        data=data,
+        headers={
+            'Key': api_key,
+            'Accept': 'application/json',
+        },
+        method='POST'
+    )
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = json.loads(resp.read())
+        score = result.get('data', {}).get('abuseConfidenceScore', '?')
+        with open(log_file, 'a') as lf:
+            lf.write(f"{ip} reported (score: {score}%) paths: {', '.join(paths[:3])}\n")
+        reported += 1
+    except Exception as e:
+        with open(log_file, 'a') as lf:
+            lf.write(f"{ip} FAILED: {e}\n")
+
+    # Rate limit: max 15 reports/sec on free tier
+    time.sleep(0.1)
+
+print(reported)
+PYEOF
+
+    REPORTED=$?
+    echo "$(date -Iseconds) Reported $NEW_REPORTABLE IPs to AbuseIPDB" >> "$LOG"
+    rm -f "$REPORT_FILE"
 fi

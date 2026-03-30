@@ -17,7 +17,8 @@ async function init() {
         const response = await fetch('data.json');
         if (!response.ok) throw new Error("Fetch failed: " + response.status);
         const data = await response.json();
-        allSessions = data.sessions || [];
+        const IGNORE_IPS = ['::1', '127.0.0.1', '0.0.0.0'];
+        allSessions = (data.sessions || []).filter(s => !IGNORE_IPS.includes(s.origin_ip));
         const summary = data.summary || {};
         
         if (allSessions.length === 0) {
@@ -396,18 +397,80 @@ function renderNotableList(items, limit) {
         const locations = getTopLocations(n.ips, geoMap, 3);
         const locStr = locations.length ? locations.join(' / ') : 'Unknown';
         const query = encodeURIComponent(getSearchQuery(n));
-        return `<div style="margin-bottom: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+        const ipsAttr = n.ips.map(ip => ip).join(',');
+        return `<div class="notable-row" data-ips="${ipsAttr}" style="margin-bottom: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem; cursor: pointer;">
             <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 0.8rem;">
                 <div style="min-width: 0; flex: 1;">
-                    <a href="https://www.google.com/search?q=${query}" target="_blank" rel="noopener" style="color: ${color}; text-decoration: none; border-bottom: 1px dashed rgba(255,255,255,0.15);" title="Search Google for ${query}">${shortLabel}</a>
+                    <a href="https://www.google.com/search?q=${query}" target="_blank" rel="noopener" style="color: ${color}; text-decoration: none; border-bottom: 1px dashed rgba(255,255,255,0.15);" title="Search Google for ${query}" onclick="event.stopPropagation();">${shortLabel}</a>
+                    <i data-lucide="chevron-down" style="width: 12px; height: 12px; display: inline-block; vertical-align: -2px; opacity: 0.4; margin-left: 4px;"></i>
                     <div style="font-size: 0.7rem; color: var(--text-secondary); margin-top: 2px;">
                         <i data-lucide="map-pin" style="width: 10px; height: 10px; display: inline-block; vertical-align: -1px;"></i> ${locStr}
                     </div>
                 </div>
                 <span style="color: ${color}; white-space: nowrap; margin-left: 12px; font-weight: 600;">${n.count} IPs</span>
             </div>
+            <div class="notable-detail" style="display: none; margin-top: 0.5rem;"></div>
         </div>`;
     }).join('');
+}
+
+function renderIpDetailTable(ipList) {
+    const sessionsByIp = {};
+    filteredSessions.forEach(s => {
+        if (!ipList.includes(s.origin_ip)) return;
+        if (!sessionsByIp[s.origin_ip]) {
+            sessionsByIp[s.origin_ip] = { ip: s.origin_ip, reqs: 0, hostname: s.geo.hostname || '', city: s.geo.city || '', cc: s.geo.country_code || '', type: getTrafficType(s), firstSeen: s.first_seen_iso, lastSeen: s.last_seen_iso, paths: new Set() };
+        }
+        sessionsByIp[s.origin_ip].reqs += s.req_count;
+        if (s.last_seen_iso > sessionsByIp[s.origin_ip].lastSeen) sessionsByIp[s.origin_ip].lastSeen = s.last_seen_iso;
+        if (s.first_seen_iso < sessionsByIp[s.origin_ip].firstSeen) sessionsByIp[s.origin_ip].firstSeen = s.first_seen_iso;
+        s.path_summary.forEach(p => sessionsByIp[s.origin_ip].paths.add(p));
+    });
+    const ips = Object.values(sessionsByIp).sort((a, b) => b.reqs - a.reqs);
+    if (!ips.length) return '<div style="font-size: 0.7rem; color: var(--text-secondary); padding: 8px 0;">No sessions in current filter</div>';
+    return `<table style="width: 100%; font-size: 0.7rem;">
+        <thead><tr>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">IP</th>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Type</th>
+            <th style="text-align: right; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Reqs</th>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Last Seen</th>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Paths</th>
+        </tr></thead>
+        <tbody>${ips.map(ip => {
+            const color = TRAFFIC_COLORS[ip.type];
+            const isBlocked = BLOCKED_COUNTRIES.includes(ip.cc) || ip.type === 'malicious';
+            const blk = isBlocked ? ' <span style="background: #f43f5e; color: #fff; padding: 0 2px; border-radius: 2px; font-size: 0.55rem; font-weight: 700;">BLK</span>' : '';
+            const pathList = [...ip.paths].slice(0, 3).join(', ') + (ip.paths.size > 3 ? ' (+' + (ip.paths.size - 3) + ')' : '');
+            const ts = ip.lastSeen.replace('T', ' ').split('.')[0];
+            return `<tr>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03);">
+                    <a href="https://ipinfo.io/${ip.ip}" target="_blank" style="color: ${color}; text-decoration: none;">${ip.ip}</a>${blk}
+                    ${ip.hostname ? '<div style="color: var(--text-secondary); font-size: 0.65rem;">' + ip.hostname + '</div>' : ''}
+                    ${ip.city ? '<div style="color: var(--text-secondary); font-size: 0.65rem;">' + ip.city + '</div>' : ''}
+                </td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: ${color};">${ip.type}</td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); text-align: right;">${ip.reqs}</td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap;">${ts}</td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: var(--text-secondary);" title="${[...ip.paths].join(', ')}">${pathList}</td>
+            </tr>`;
+        }).join('')}</tbody>
+    </table>`;
+}
+
+function attachDrillDown(container) {
+    container.querySelectorAll('.notable-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('a')) return;
+            const detail = row.querySelector('.notable-detail');
+            if (detail.style.display !== 'none') {
+                detail.style.display = 'none';
+                return;
+            }
+            const ips = row.dataset.ips.split(',').filter(Boolean);
+            detail.innerHTML = renderIpDetailTable(ips);
+            detail.style.display = 'block';
+        });
+    });
 }
 
 function renderSectionHeader(label, count, color) {
@@ -542,6 +605,7 @@ function setupEvents() {
             html += renderNotableList(otherHosting);
         }
         body.innerHTML = html;
+        attachDrillDown(body);
         modal.classList.add('open');
         lucide.createIcons();
     });
@@ -603,45 +667,8 @@ function setupEvents() {
                     return;
                 }
                 const code = row.dataset.code;
-                const sessions = filteredSessions.filter(s => (s.geo.country_code || '??') === code);
-                const ipData = {};
-                sessions.forEach(s => {
-                    if (!ipData[s.origin_ip]) {
-                        ipData[s.origin_ip] = { ip: s.origin_ip, reqs: 0, hostname: s.geo.hostname || '', city: s.geo.city || '', type: getTrafficType(s), firstSeen: s.first_seen_iso, lastSeen: s.last_seen_iso, paths: new Set() };
-                    }
-                    ipData[s.origin_ip].reqs += s.req_count;
-                    if (s.last_seen_iso > ipData[s.origin_ip].lastSeen) ipData[s.origin_ip].lastSeen = s.last_seen_iso;
-                    if (s.first_seen_iso < ipData[s.origin_ip].firstSeen) ipData[s.origin_ip].firstSeen = s.first_seen_iso;
-                    s.path_summary.forEach(p => ipData[s.origin_ip].paths.add(p));
-                });
-                const ips = Object.values(ipData).sort((a, b) => b.reqs - a.reqs);
-                const isCountryBlocked = BLOCKED_COUNTRIES.includes(code);
-                detail.innerHTML = `<table style="width: 100%; font-size: 0.7rem;">
-                    <thead><tr>
-                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">IP</th>
-                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Type</th>
-                        <th style="text-align: right; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Reqs</th>
-                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Last Seen</th>
-                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Paths</th>
-                    </tr></thead>
-                    <tbody>${ips.map(ip => {
-                        const color = TRAFFIC_COLORS[ip.type];
-                        const blk = (isCountryBlocked || ip.type === 'malicious') ? ' <span style="background: #f43f5e; color: #fff; padding: 0 2px; border-radius: 2px; font-size: 0.55rem; font-weight: 700;">BLK</span>' : '';
-                        const pathList = [...ip.paths].slice(0, 3).join(', ') + (ip.paths.size > 3 ? ` (+${ip.paths.size - 3})` : '');
-                        const ts = ip.lastSeen.replace('T', ' ').split('.')[0];
-                        return `<tr>
-                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03);">
-                                <a href="https://ipinfo.io/${ip.ip}" target="_blank" style="color: ${color}; text-decoration: none;">${ip.ip}</a>${blk}
-                                ${ip.hostname ? `<div style="color: var(--text-secondary); font-size: 0.65rem;">${ip.hostname}</div>` : ''}
-                                ${ip.city ? `<div style="color: var(--text-secondary); font-size: 0.65rem;">${ip.city}</div>` : ''}
-                            </td>
-                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: ${color};">${ip.type}</td>
-                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); text-align: right;">${ip.reqs}</td>
-                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap;">${ts}</td>
-                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: var(--text-secondary);" title="${[...ip.paths].join(', ')}">${pathList}</td>
-                        </tr>`;
-                    }).join('')}</tbody>
-                </table>`;
+                const countryIps = [...new Set(filteredSessions.filter(s => (s.geo.country_code || '??') === code).map(s => s.origin_ip))];
+                detail.innerHTML = renderIpDetailTable(countryIps);
                 detail.style.display = 'block';
             });
         });
