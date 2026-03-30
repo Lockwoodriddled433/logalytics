@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# block-scanner-ips.sh — Extract malicious IPs from log analyzer data and add to ipset
+# block-scanner-ips.sh — Extract malicious IPs from Logalytics data and add to ipset
 # Runs as cron job after data.json is refreshed
 
 set -euo pipefail

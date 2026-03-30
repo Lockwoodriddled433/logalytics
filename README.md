@@ -1,4 +1,4 @@
-# Log Analyzer Pro
+# Logalytics
 
 Real-time web traffic analysis dashboard with geographic visualization, traffic classification, and threat detection.
 
@@ -20,15 +20,13 @@ Real-time web traffic analysis dashboard with geographic visualization, traffic 
 
 ```bash
 # Clone the repo
-git clone https://github.com/your-username/log-analyzer.git
-cd log-analyzer
+git clone https://github.com/your-username/logalytics.git
 
-# Serve locally (Python)
-cd html
-python3 -m http.server 8080
-
-# Open http://localhost:8080
+# Move the dashboard files to your web server's documented root
+sudo cp -r logalytics/html/* /var/www/html/logalytics/
 ```
+
+Then navigate to `http://your-server/logalytics` in your browser.
 
 The dashboard expects a `data.json` file in the `html/` directory. A `data.sample.json` is included for reference. Copy it to get started:
 
@@ -256,7 +254,7 @@ Because this dashboard visually exposes internal IP data and paths, you should *
 server {
     listen 80;
     server_name logs.yourdomain.com;
-    root /var/www/log-analyzer/html;
+    root /var/www/logalytics/html;
     index index.html;
 
     # Restrict to your office/VPN IPs
@@ -265,7 +263,7 @@ server {
     deny all;
 
     # Require password
-    auth_basic "Log Analyzer Admin";
+    auth_basic "Logalytics Admin";
     auth_basic_user_file /etc/nginx/.htpasswd;
 
     # Prevent direct access to raw data.json (optional, but UI needs it)
@@ -281,11 +279,11 @@ server {
 ```apache
 <VirtualHost *:80>
     ServerName logs.yourdomain.com
-    DocumentRoot /var/www/log-analyzer/html
+    DocumentRoot /var/www/logalytics/html
 
-    <Directory /var/www/log-analyzer/html>
+    <Directory /var/www/logalytics/html>
         AuthType Basic
-        AuthName "Log Analyzer Admin"
+        AuthName "Logalytics Admin"
         AuthUserFile /etc/apache2/.htpasswd
         Require valid-user
         
