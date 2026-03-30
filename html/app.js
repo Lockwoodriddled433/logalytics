@@ -382,7 +382,7 @@ function renderNotableList(items, limit) {
     const list = limit ? items.slice(0, limit) : items;
     const isModal = !limit;
     return list.map(n => {
-        const shortLabel = n.label.replace(/^(RDNS|ASN): /, '').replace(/ \| Actor: unknown/, '').replace(/ \| Confidence: /, ' | ');
+        const shortLabel = n.label.replace(/^(RDNS|ASN): /, '').replace(/ \(unverified\)/, '').replace(/ \| Actor: unknown/, '').replace(/ \| Confidence: /, ' | ');
         const dominant = getDominantType(n.ips, ipMap);
         const color = TRAFFIC_COLORS[dominant];
         if (!isModal) {
@@ -443,8 +443,12 @@ function updateLogFeed() {
         const tr = document.createElement('tr');
         const ttype = getTrafficType(s);
         const color = TRAFFIC_COLORS[ttype];
-        const isBlocked = BLOCKED_COUNTRIES.includes(s.geo.country_code);
-        const blockedTag = isBlocked ? ' <span style="background: #f43f5e; color: #fff; padding: 0 3px; border-radius: 2px; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;">BLK</span>' : '';
+        const isCountryBlocked = BLOCKED_COUNTRIES.includes(s.geo.country_code);
+        const isMalBlocked = ttype === 'malicious';
+        const isBlocked = isCountryBlocked || isMalBlocked;
+        const blockedTag = isBlocked
+            ? ` <span style="background: #f43f5e; color: #fff; padding: 0 3px; border-radius: 2px; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;">${isCountryBlocked ? 'GEO-BLK' : 'IP-BLK'}</span>`
+            : '';
 
         tr.innerHTML = `
             <td>
@@ -457,7 +461,7 @@ function updateLogFeed() {
             <td><span class="badge" style="background: rgba(255,255,255,0.05)">Cluster</span></td>
             <td title="${s.path_summary.join(', ')}">${s.path_summary[0] || '/'} ${s.path_summary.length > 1 ? '(+'+(s.path_summary.length-1)+')' : ''}</td>
             <td><span style="color: ${ttype === 'malicious' ? '#f43f5e' : '#10b981'}">${s.req_count} reqs</span></td>
-            <td style="color: var(--text-secondary)">${s.last_seen_iso.split('T')[1].split('.')[0]}</td>
+            <td style="color: var(--text-secondary); white-space: nowrap;">${s.last_seen_iso.replace('T', ' ').split('.')[0]}</td>
         `;
         feed.appendChild(tr);
     });
@@ -574,9 +578,9 @@ function setupEvents() {
             const isBlocked = BLOCKED_COUNTRIES.includes(e.code);
             const blkBadge = isBlocked ? ' <span style="background: #f43f5e; color: #fff; padding: 0 3px; border-radius: 2px; font-size: 0.6rem; font-weight: 700;">BLK</span>' : '';
             const blockedLabel = e.blockedCount > 0 ? `<span style="color: #f43f5e;">${e.blockedCount} blk</span> / ` : '';
-            return `<div style="margin-bottom: 1rem;">
+            return `<div class="country-row" data-code="${e.code}" style="margin-bottom: 1rem; cursor: pointer;">
                 <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 2px;">
-                    <span><b>${e.code}</b> ${e.name}${blkBadge}</span>
+                    <span><b>${e.code}</b> ${e.name}${blkBadge} <i data-lucide="chevron-down" style="width: 12px; height: 12px; display: inline-block; vertical-align: -2px; opacity: 0.4;"></i></span>
                     <span>${e.total} reqs</span>
                 </div>
                 <div style="font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 3px;">${blockedLabel}${e.ipCount} IPs</div>
@@ -587,9 +591,63 @@ function setupEvents() {
                     <div style="width: ${(e.bot/e.total*100)}%; background: #ffaa00;"></div>
                     <div style="width: ${(e.mal/e.total*100)}%; background: #f43f5e;"></div>
                 </div>
+                <div class="country-detail" style="display: none; margin-top: 0.5rem;"></div>
             </div>`;
         }).join('');
+
+        body.querySelectorAll('.country-row').forEach(row => {
+            row.addEventListener('click', () => {
+                const detail = row.querySelector('.country-detail');
+                if (detail.style.display !== 'none') {
+                    detail.style.display = 'none';
+                    return;
+                }
+                const code = row.dataset.code;
+                const sessions = filteredSessions.filter(s => (s.geo.country_code || '??') === code);
+                const ipData = {};
+                sessions.forEach(s => {
+                    if (!ipData[s.origin_ip]) {
+                        ipData[s.origin_ip] = { ip: s.origin_ip, reqs: 0, hostname: s.geo.hostname || '', city: s.geo.city || '', type: getTrafficType(s), firstSeen: s.first_seen_iso, lastSeen: s.last_seen_iso, paths: new Set() };
+                    }
+                    ipData[s.origin_ip].reqs += s.req_count;
+                    if (s.last_seen_iso > ipData[s.origin_ip].lastSeen) ipData[s.origin_ip].lastSeen = s.last_seen_iso;
+                    if (s.first_seen_iso < ipData[s.origin_ip].firstSeen) ipData[s.origin_ip].firstSeen = s.first_seen_iso;
+                    s.path_summary.forEach(p => ipData[s.origin_ip].paths.add(p));
+                });
+                const ips = Object.values(ipData).sort((a, b) => b.reqs - a.reqs);
+                const isCountryBlocked = BLOCKED_COUNTRIES.includes(code);
+                detail.innerHTML = `<table style="width: 100%; font-size: 0.7rem;">
+                    <thead><tr>
+                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">IP</th>
+                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Type</th>
+                        <th style="text-align: right; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Reqs</th>
+                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Last Seen</th>
+                        <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Paths</th>
+                    </tr></thead>
+                    <tbody>${ips.map(ip => {
+                        const color = TRAFFIC_COLORS[ip.type];
+                        const blk = (isCountryBlocked || ip.type === 'malicious') ? ' <span style="background: #f43f5e; color: #fff; padding: 0 2px; border-radius: 2px; font-size: 0.55rem; font-weight: 700;">BLK</span>' : '';
+                        const pathList = [...ip.paths].slice(0, 3).join(', ') + (ip.paths.size > 3 ? ` (+${ip.paths.size - 3})` : '');
+                        const ts = ip.lastSeen.replace('T', ' ').split('.')[0];
+                        return `<tr>
+                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03);">
+                                <a href="https://ipinfo.io/${ip.ip}" target="_blank" style="color: ${color}; text-decoration: none;">${ip.ip}</a>${blk}
+                                ${ip.hostname ? `<div style="color: var(--text-secondary); font-size: 0.65rem;">${ip.hostname}</div>` : ''}
+                                ${ip.city ? `<div style="color: var(--text-secondary); font-size: 0.65rem;">${ip.city}</div>` : ''}
+                            </td>
+                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: ${color};">${ip.type}</td>
+                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); text-align: right;">${ip.reqs}</td>
+                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap;">${ts}</td>
+                            <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: var(--text-secondary);" title="${[...ip.paths].join(', ')}">${pathList}</td>
+                        </tr>`;
+                    }).join('')}</tbody>
+                </table>`;
+                detail.style.display = 'block';
+            });
+        });
+
         modal.classList.add('open');
+        lucide.createIcons();
     });
 
     document.getElementById('close-country-modal').addEventListener('click', () => {
