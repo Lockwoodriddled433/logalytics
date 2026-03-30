@@ -4,14 +4,16 @@
 
 set -euo pipefail
 
-DATA_JSON="/var/www/log-analyzer/html/data.json"
-IPSET_ABUSIVE="abusive_ips"
-IPSET_SCANNERS="scanner_nets"
-PERSIST_ABUSIVE="/etc/ipset-abusive.conf"
-PERSIST_SCANNERS="/etc/ipset-scanners.conf"
-LOG="/var/log/block-scanner-ips.log"
-ABUSEIPDB_KEY_FILE="/etc/abuseipdb.key"
-ABUSEIPDB_LOG="/var/log/abuseipdb-reports.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATA_JSON="${DATA_JSON:-$SCRIPT_DIR/../html/data.json}"
+IPSET_ABUSIVE="${IPSET_ABUSIVE:-abusive_ips}"
+IPSET_SCANNERS="${IPSET_SCANNERS:-scanner_nets}"
+PERSIST_ABUSIVE="${PERSIST_ABUSIVE:-/etc/ipset-abusive.conf}"
+PERSIST_SCANNERS="${PERSIST_SCANNERS:-/etc/ipset-scanners.conf}"
+LOG="${LOG:-/var/log/block-scanner-ips.log}"
+ABUSEIPDB_KEY_FILE="${ABUSEIPDB_KEY_FILE:-/etc/abuseipdb.key}"
+ABUSEIPDB_LOG="${ABUSEIPDB_LOG:-/var/log/abuseipdb-reports.log}"
+
 
 [ -f "$DATA_JSON" ] || { echo "$(date -Iseconds) ERROR: $DATA_JSON not found" >> "$LOG"; exit 1; }
 

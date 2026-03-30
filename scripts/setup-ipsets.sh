@@ -69,4 +69,6 @@ iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 echo "=== Done ==="
 echo "Next steps:"
 echo "  1. Populate blocked_countries with country CIDR ranges (see load-country-blocks.sh)"
-echo "  2. Add cron job: 0 */6 * * * /path/to/block-scanner-ips.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "  2. Add cron job: 0 */6 * * * $SCRIPT_DIR/block-scanner-ips.sh"
+

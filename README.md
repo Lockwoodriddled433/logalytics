@@ -19,7 +19,7 @@ Real-time web traffic analysis dashboard with geographic visualization, traffic 
 
 ```bash
 # Clone the repo
-git clone https://github.com/your-org/log-analyzer.git
+git clone https://github.com/your-username/log-analyzer.git
 cd log-analyzer
 
 # Serve locally (Python)
@@ -185,7 +185,7 @@ This creates three ipsets:
 
 ```bash
 # Add to crontab (runs every 6 hours)
-echo "0 */6 * * * /path/to/scripts/block-scanner-ips.sh" | sudo crontab -
+echo "0 */6 * * * $(pwd)/scripts/block-scanner-ips.sh" | sudo crontab -
 ```
 
 `block-scanner-ips.sh` reads `data.json` and:

@@ -6,8 +6,9 @@
 
 set -euo pipefail
 
-IPSET_NAME="blocked_countries"
-PERSIST="/etc/ipset-countries.conf"
+IPSET_NAME="${IPSET_NAME:-blocked_countries}"
+PERSIST="${PERSIST:-/etc/ipset-countries.conf}"
+
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <country_code> [country_code ...]"
