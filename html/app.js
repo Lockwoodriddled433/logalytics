@@ -318,6 +318,7 @@ function updateDashboard() {
     updateLogFeed();
     updateCountryReport();
     updateTopPaths();
+    updateNotableDomains(allNotable);
 }
 
 function updateMarkers() {
@@ -667,23 +668,40 @@ function sortNotablesByCount(items) {
     return [...items].sort((a, b) => (b.count || 0) - (a.count || 0));
 }
 
+function getVisibleNotables(items) {
+    const visibleIps = new Set(filteredSessions.map(s => s.origin_ip));
+    return items
+        .map(n => {
+            const visibleItemIps = (n.ips || []).filter(ip => visibleIps.has(ip));
+            return {
+                ...n,
+                ips: visibleItemIps,
+                count: visibleItemIps.length
+            };
+        })
+        .filter(n => n.count > 0);
+}
+
 function updateNotableDomains(notable) {
     const sidebarContainer = document.getElementById('notable-domains');
     if (!sidebarContainer || !notable) return;
 
     const { rdns, cloud, otherHosting } = categorizeNotable(notable);
+    const visibleRdns = sortNotablesByCount(getVisibleNotables(rdns));
+    const visibleCloud = sortNotablesByCount(getVisibleNotables(cloud));
+    const visibleOtherHosting = sortNotablesByCount(getVisibleNotables(otherHosting));
     let html = '';
-    if (rdns.length) {
-        html += renderSectionHeader('rDNS', rdns.length, 'var(--accent-color)');
-        html += renderNotableList(rdns, 4);
+    if (visibleRdns.length) {
+        html += renderSectionHeader('rDNS', visibleRdns.length, 'var(--accent-color)');
+        html += renderNotableList(visibleRdns, 4);
     }
-    if (cloud.length) {
-        html += renderSectionHeader('Cloud Providers', cloud.length, '#a855f7');
-        html += renderNotableList(cloud, 4);
+    if (visibleCloud.length) {
+        html += renderSectionHeader('Cloud Providers', visibleCloud.length, '#a855f7');
+        html += renderNotableList(visibleCloud, 4);
     }
-    if (otherHosting.length) {
-        html += renderSectionHeader('Other Hosting', otherHosting.length, '#22c55e');
-        html += renderNotableList(otherHosting, 3);
+    if (visibleOtherHosting.length) {
+        html += renderSectionHeader('Other Hosting', visibleOtherHosting.length, '#22c55e');
+        html += renderNotableList(visibleOtherHosting, 3);
     }
     sidebarContainer.innerHTML = html;
 }
@@ -833,9 +851,9 @@ function setupEvents() {
         const modal = document.getElementById('notable-modal');
         const body = document.getElementById('notable-modal-body');
         const { rdns, cloud, otherHosting } = categorizeNotable(allNotable);
-        const sortedRdns = sortNotablesByCount(rdns);
-        const sortedCloud = sortNotablesByCount(cloud);
-        const sortedOtherHosting = sortNotablesByCount(otherHosting);
+        const sortedRdns = sortNotablesByCount(getVisibleNotables(rdns));
+        const sortedCloud = sortNotablesByCount(getVisibleNotables(cloud));
+        const sortedOtherHosting = sortNotablesByCount(getVisibleNotables(otherHosting));
         let html = '';
         if (sortedRdns.length) {
             html += `<div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-color); margin: 1rem 0 0.75rem; font-weight: 700;">rDNS-Based (${sortedRdns.length})</div>`;
