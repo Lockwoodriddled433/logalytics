@@ -779,30 +779,146 @@ function updateCountryReport() {
     }).join('');
 }
 
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function getTopPathEntries() {
+    const pathMap = {};
+
+    filteredSessions.forEach((s) => {
+        const ttype = getTrafficType(s);
+        if (!(ttype === 'malicious' || ttype === 'bot' || isScannerTraffic(s))) return;
+
+        const uniquePaths = new Set(s.path_summary || []);
+        uniquePaths.forEach((path) => {
+            if (!pathMap[path]) {
+                pathMap[path] = {
+                    path,
+                    count: 0,
+                    ips: new Set()
+                };
+            }
+            pathMap[path].count += Number(s.req_count || 0);
+            pathMap[path].ips.add(s.origin_ip);
+        });
+    });
+
+    return Object.values(pathMap)
+        .map((entry) => ({
+            path: entry.path,
+            count: entry.count,
+            ips: [...entry.ips],
+            ipCount: entry.ips.size
+        }))
+        .sort((a, b) => b.count - a.count);
+}
+
+function renderPathIpDetailTable(path) {
+    const sessionsByIp = {};
+
+    filteredSessions.forEach((s) => {
+        if (!(s.path_summary || []).includes(path)) return;
+
+        if (!sessionsByIp[s.origin_ip]) {
+            sessionsByIp[s.origin_ip] = {
+                ip: s.origin_ip,
+                hits: 0,
+                sessions: 0,
+                hostname: s.geo.hostname || '',
+                city: s.geo.city || '',
+                cc: s.geo.country_code || '',
+                type: getTrafficType(s),
+                lastSeen: s.last_seen_iso
+            };
+        }
+
+        sessionsByIp[s.origin_ip].hits += Number(s.req_count || 0);
+        sessionsByIp[s.origin_ip].sessions += 1;
+        if (s.last_seen_iso > sessionsByIp[s.origin_ip].lastSeen) {
+            sessionsByIp[s.origin_ip].lastSeen = s.last_seen_iso;
+        }
+    });
+
+    const ips = Object.values(sessionsByIp).sort((a, b) => b.hits - a.hits);
+    if (!ips.length) {
+        return '<div style="font-size: 0.7rem; color: var(--text-secondary); padding: 8px 0;">No sessions in current filter</div>';
+    }
+
+    return `<table style="width: 100%; font-size: 0.7rem;">
+        <thead><tr>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">IP</th>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Type</th>
+            <th style="text-align: right; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Hits</th>
+            <th style="text-align: right; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Sessions</th>
+            <th style="text-align: left; padding: 4px 6px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">Last Seen</th>
+        </tr></thead>
+        <tbody>${ips.map(ip => {
+            const color = TRAFFIC_COLORS[ip.type];
+            const isBlocked = BLOCKED_COUNTRIES.includes(ip.cc) || ip.type === 'malicious';
+            const blk = isBlocked ? ' <span style="background: #f43f5e; color: #fff; padding: 0 2px; border-radius: 2px; font-size: 0.55rem; font-weight: 700;">BLK</span>' : '';
+            const ts = ip.lastSeen.replace('T', ' ').split('.')[0];
+            return `<tr>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03);">
+                    <a href="https://ipinfo.io/${ip.ip}" target="_blank" style="color: ${color}; text-decoration: none;">${ip.ip}</a>${blk}
+                    ${ip.hostname ? '<div style="color: var(--text-secondary); font-size: 0.65rem;">' + escapeHtml(ip.hostname) + '</div>' : ''}
+                    ${ip.city ? '<div style="color: var(--text-secondary); font-size: 0.65rem;">' + escapeHtml(ip.city) + '</div>' : ''}
+                </td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); color: ${color};">${ip.type}</td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); text-align: right;">${ip.hits}</td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); text-align: right;">${ip.sessions}</td>
+                <td style="padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap;">${ts}</td>
+            </tr>`;
+        }).join('')}</tbody>
+    </table>`;
+}
+
+function attachPathDrillDown(container) {
+    container.querySelectorAll('.path-row').forEach((row) => {
+        const detail = row.querySelector('.path-detail');
+        if (!detail) return;
+
+        const expand = () => {
+            const encodedPath = row.dataset.path || '';
+            const path = decodeURIComponent(encodedPath);
+            detail.innerHTML = renderPathIpDetailTable(path);
+            detail.style.display = 'block';
+        };
+
+        // Expanded by default for quick visibility and easier copy/select.
+        expand();
+
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('a')) return;
+
+            const selectedText = window.getSelection ? window.getSelection().toString() : '';
+            if (selectedText && selectedText.trim().length > 0) return;
+
+            // Keep expanded by default; only re-open if something hid it.
+            if (detail.style.display === 'none') {
+                expand();
+            }
+        });
+    });
+}
+
 function updateTopPaths() {
     const tableDiv = document.getElementById('top-paths');
     if (!tableDiv) return;
 
-    const pathCounts = {};
-    filteredSessions.forEach(s => {
-        const ttype = getTrafficType(s);
-        // Look at paths hit by malicious actors or suspected scanner bots
-        if (ttype === 'malicious' || ttype === 'bot' || isScannerTraffic(s)) {
-            (s.path_summary || []).forEach(p => {
-                pathCounts[p] = (pathCounts[p] || 0) + s.req_count;
-            });
-        }
-    });
-
-    const entries = Object.entries(pathCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 50);
+    const entries = getTopPathEntries().slice(0, 50);
 
     let html = '<table style="width: 100%; border-collapse: collapse;">';
-    entries.forEach(([path, count]) => {
+    entries.forEach(({ path, count, ipCount }) => {
         html += `
             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                <td title="${path}" style="padding: 4px 0; font-size: 0.75rem; word-break: break-all; color: var(--text-primary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${path}</td>
+                <td title="${escapeHtml(path)}" style="padding: 4px 0; font-size: 0.75rem; word-break: break-all; color: var(--text-primary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(path)}</td>
+                <td style="padding: 4px 0; font-size: 0.75rem; text-align: right; color: var(--text-secondary);">${ipCount} IPs</td>
                 <td style="padding: 4px 0; font-size: 0.75rem; text-align: right; color: var(--accent-color); font-weight: 500;">${count}</td>
             </tr>
         `;
@@ -875,6 +991,41 @@ function setupEvents() {
 
     document.getElementById('close-notable-modal').addEventListener('click', () => {
         document.getElementById('notable-modal').classList.remove('open');
+    });
+
+    document.getElementById('open-paths-modal').addEventListener('click', () => {
+        const modal = document.getElementById('paths-modal');
+        const body = document.getElementById('paths-modal-body');
+        const entries = getTopPathEntries();
+
+        if (!entries.length) {
+            body.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-secondary); padding: 1rem 0;">No scanner paths found in current filter</div>';
+            modal.classList.add('open');
+            return;
+        }
+
+        body.innerHTML = entries.map(({ path, count, ipCount }) => {
+            const encodedPath = encodeURIComponent(path);
+            return `<div class="path-row" data-path="${encodedPath}" style="margin-bottom: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem; cursor: pointer;">
+                <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 0.8rem; gap: 12px;">
+                    <div style="min-width: 0; flex: 1;">
+                        <span title="${escapeHtml(path)}" style="color: var(--text-primary); display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(path)}</span>
+                        <i data-lucide="chevron-down" style="width: 12px; height: 12px; display: inline-block; vertical-align: -2px; opacity: 0.4; margin-left: 4px;"></i>
+                    </div>
+                    <span style="color: var(--text-secondary); white-space: nowrap;">${ipCount} IPs</span>
+                    <span style="color: var(--accent-color); white-space: nowrap; font-weight: 600;">${count} hits</span>
+                </div>
+                <div class="path-detail" style="display: none; margin-top: 0.5rem;"></div>
+            </div>`;
+        }).join('');
+
+        attachPathDrillDown(body);
+        modal.classList.add('open');
+        lucide.createIcons();
+    });
+
+    document.getElementById('close-paths-modal').addEventListener('click', () => {
+        document.getElementById('paths-modal').classList.remove('open');
     });
 
     document.getElementById('open-country-modal').addEventListener('click', () => {
