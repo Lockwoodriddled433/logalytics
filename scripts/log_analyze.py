@@ -6,6 +6,7 @@ import os
 import glob
 import gzip
 import subprocess
+import sys
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -40,6 +41,10 @@ BLOCK_HISTORY_FILE = os.path.join(DATA_DIR, 'blocked_ips.json')
 # Optional cap; default keeps full range for timeline/history fidelity.
 # Set LOG_ANALYZER_MAX_SESSIONS to a positive integer to cap output.
 MAX_OUTPUT_SESSIONS = int(os.environ.get('LOG_ANALYZER_MAX_SESSIONS', '0') or '0')
+
+# Progress reporting controls
+PROGRESS_ENABLED = os.environ.get('LOG_ANALYZER_PROGRESS', '1') != '0'
+PROGRESS_INTERVAL_LINES = int(os.environ.get('LOG_ANALYZER_PROGRESS_INTERVAL_LINES', '50000') or '50000')
 
 # Fallback Regex Patterns
 BOT_PATTERN_FALLBACK = re.compile(
@@ -262,7 +267,26 @@ def discover_log_files():
 
     return sorted(existing, key=log_sort_key)
 
+def progress(stage, current=None, total=None, extra=''):
+    if not PROGRESS_ENABLED:
+        return
+
+    ts = datetime.now().strftime('%H:%M:%S')
+    msg = f"[{ts}] [log_analyze] {stage}"
+
+    if current is not None and total:
+        pct = (current / total) * 100 if total else 0
+        msg += f" ({current}/{total}, {pct:.1f}%)"
+    elif current is not None:
+        msg += f" ({current})"
+
+    if extra:
+        msg += f" - {extra}"
+
+    print(msg, file=sys.stderr, flush=True)
+
 def analyze():
+    progress('Initializing analysis')
     bot_regexes = load_bots()
     malicious_paths_list = load_malicious_paths()
     block_history = load_block_history()
@@ -276,30 +300,47 @@ def analyze():
     try:
         city_reader = maxminddb.open_database(MMDB_FILE)
         asn_reader = maxminddb.open_database(ASN_MMDB_FILE)
+        progress('Opened GeoIP databases')
 
         active_logs = discover_log_files()
-        if not active_logs: return
+        if not active_logs:
+            progress('No active log files found')
+            return
+
+        progress('Discovered log files', len(active_logs), len(active_logs), ', '.join(os.path.basename(p) for p in active_logs))
 
         # Pre-pass for IP discovery
         new_ips = set()
-        for log_file in active_logs:
+        for idx, log_file in enumerate(active_logs, 1):
+            progress('Pre-scan log file', idx, len(active_logs), os.path.basename(log_file))
             with open_log_file(log_file) as f:
-                for line in f:
+                for line_no, line in enumerate(f, 1):
                     match = LOG_PATTERN.match(line)
                     if match:
                         ip = match.group('ip')
                         if is_valid_ip(ip) and ip != '127.0.0.1' and ip not in ip_cache: new_ips.add(ip)
+                    if line_no % PROGRESS_INTERVAL_LINES == 0:
+                        progress('Pre-scan progress', line_no, extra=os.path.basename(log_file))
+
+        progress('Pre-scan complete', len(new_ips), extra='unique IPs queued for rDNS')
 
 
         # Parallel DNS
         if new_ips:
+            progress('Resolving rDNS', len(new_ips), extra='parallel lookup start')
             with ThreadPoolExecutor(max_workers=50) as ex:
                 hosts = list(ex.map(get_hostname, new_ips))
             for ip, host in zip(new_ips, hosts): ip_cache[ip] = { 'hostname': host, 'partial': True }
+            progress('rDNS resolution complete', len(new_ips), extra='parallel lookup finished')
+        else:
+            progress('No new IPs require rDNS resolution')
 
-        for log_file in active_logs:
+        total_processed_lines = 0
+        for idx, log_file in enumerate(active_logs, 1):
+            progress('Processing log file', idx, len(active_logs), os.path.basename(log_file))
             with open_log_file(log_file) as f:
-                for line in f:
+                for line_no, line in enumerate(f, 1):
+                    total_processed_lines += 1
                     match = LOG_PATTERN.match(line)
                     if not match: continue
                 
@@ -421,6 +462,13 @@ def analyze():
                     elif ip_cache[origin_ip]['is_bot']: country_ips[c_code]['bots'].add(origin_ip)
                     else: country_ips[c_code]['legit'].add(origin_ip)
 
+                    if line_no % PROGRESS_INTERVAL_LINES == 0:
+                        progress(
+                            'Processing progress',
+                            total_processed_lines,
+                            extra=f"sessions={len(sessions)}, ips={len(ip_cache)}, file={os.path.basename(log_file)}"
+                        )
+
     except Exception as e:
         print(f"Error during analysis: {e}")
     finally:
@@ -428,6 +476,7 @@ def analyze():
         if asn_reader: asn_reader.close()
 
     # Finalize Telemetry & Clustering
+    progress('Finalizing sessions', len(sessions))
     final_sessions = []
     for s in sessions.values():
         dur = max(1, s['last_seen'] - s['first_seen'])
@@ -441,6 +490,7 @@ def analyze():
         final_sessions.append(s)
 
     final_sessions.sort(key=lambda x: x['last_seen'], reverse=True)
+    progress('Sessions finalized', len(final_sessions))
 
     # Recompute Uniques Correctly
     output_sessions = final_sessions[:MAX_OUTPUT_SESSIONS] if MAX_OUTPUT_SESSIONS > 0 else final_sessions
@@ -454,6 +504,7 @@ def analyze():
             'updated_at': datetime.now().isoformat()
         }
     }
+    progress('Prepared output payload', len(output_sessions), extra='sessions selected for output')
     # Notable Entities
     notable_entities = {}
     for ip, info in ip_cache.items():
@@ -467,9 +518,11 @@ def analyze():
         try:
             os.makedirs(os.path.dirname(f), exist_ok=True)
             with open(f, 'w') as out: json.dump(output_data, out, indent=2)
+            progress('Wrote output file', extra=f)
         except Exception as e:
             print(f"Warning: Could not write to {f}: {e}")
 
+    progress('Analysis complete', len(final_sessions), extra=f'unique IPs={len(ip_cache)}')
 
     print(f"Analysis complete. {len(final_sessions)} clustered sessions from {len(ip_cache)} unique origin IPs.")
 
