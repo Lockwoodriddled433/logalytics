@@ -43,7 +43,7 @@ import urllib.request, urllib.parse
 
 data_path, ipset_abusive, ipset_scanners = sys.argv[1], sys.argv[2], sys.argv[3]
 BLOCK_HISTORY_FILE = os.environ.get('BLOCK_HISTORY_FILE', '/var/lib/log_analyzer/data/blocked_ips.json')
-
+SAFE_IPS_RAW = os.environ.get('SAFE_IPS', '188.89.187.128')
 # Configuration from environment
 ABUSEIPDB_KEY = os.environ.get('ABUSEIPDB_KEY', '')
 ABUSE_SCORE_THRESHOLD = int(os.environ.get('ABUSE_SCORE_THRESHOLD', 75))
@@ -74,6 +74,7 @@ SCANNER_RDNS = [
 ]
 
 BLOCKED_COUNTRIES = set(os.environ.get('BLOCKED_COUNTRIES', '').split())
+SAFE_IPS = {ip.strip() for ip in re.split(r'[\s,]+', SAFE_IPS_RAW) if ip.strip()}
 
 patterns = [re.compile(p, re.IGNORECASE) for p in MALICIOUS_PATHS]
 safe_patterns = [re.compile(p, re.IGNORECASE) for p in SAFE_PATHS]
@@ -95,8 +96,46 @@ def is_cloudflare(ip_str):
 def is_safe_path(path):
     return any(rx.search(path) for rx in safe_patterns)
 
+def is_safe_ip(ip_str):
+    return ip_str in SAFE_IPS
+
 def is_scanner_path(path):
     return any(rx.search(path) for rx in patterns) and not is_safe_path(path)
+
+def suspicious_paths(paths):
+    return [p for p in paths if is_scanner_path(p)]
+
+def get_status_counts(session):
+    status_counts = session.get('status_counts', {}) or {}
+    s2 = int(status_counts.get('2xx', 0) or 0)
+    s4 = int(status_counts.get('4xx', 0) or 0)
+    s5 = int(status_counts.get('5xx', 0) or 0)
+    return s2, s4, s5
+
+def derive_session_evidence(session):
+    # Policy: any session with successful (2xx) responses is considered safe
+    # for path-based malicious evidence.
+    s2, s4, s5 = get_status_counts(session)
+    if s2 > 0:
+        return (None, None, [])
+
+    paths = session.get('path_summary', []) or []
+    suspicious = suspicious_paths(paths)
+    if suspicious:
+        return ('malicious_path_probe', suspicious[0], suspicious)
+
+    if (s4 + s5) > 0:
+        return ('suspicious_status_profile', f'4xx={s4},5xx={s5}', [])
+
+    tags = [t for t in (session.get('tags', []) or []) if t]
+    if tags:
+        return ('analyzer_tag_signal', tags[0], [])
+
+    intent = (session.get('intent') or '').strip()
+    if intent and intent.lower() != 'passive traffic':
+        return ('analyzer_intent_signal', intent, [])
+
+    return (None, None, [])
 
 with open(data_path) as f:
     data = json.load(f)
@@ -129,6 +168,8 @@ for s in data.get('sessions', []):
     ip = s.get('origin_ip', '')
     if ':' in ip or ip in IGNORE_IPS:
         continue
+    if is_safe_ip(ip):
+        continue
     # Check rDNS hostname for known scanners
     hostname = (s.get('geo', {}).get('hostname') or '').lower()
     if any(scanner in hostname for scanner in SCANNER_RDNS):
@@ -140,13 +181,17 @@ for s in data.get('sessions', []):
         mark_block(ip, 'blocked_country', f'country={cc}')
         continue
     if s.get('is_malicious', False):
-        mark_block(ip, 'session_marked_malicious', 'is_malicious=true')
-        reportable.setdefault(ip, set()).update(s.get('path_summary', []))
+        reason, evidence, suspicious = derive_session_evidence(s)
+        if reason and evidence:
+            mark_block(ip, reason, evidence)
+            if suspicious:
+                reportable.setdefault(ip, set()).update(suspicious)
         continue
+    s2, _s4, _s5 = get_status_counts(s)
     for p in s.get('path_summary', []):
-        if is_scanner_path(p):
+        if s2 == 0 and is_scanner_path(p):
             mark_block(ip, 'malicious_path_probe', p)
-            reportable.setdefault(ip, set()).update(s.get('path_summary', []))
+            reportable.setdefault(ip, set()).add(p)
             break
 
 # Check uncategorized IPs against AbuseIPDB
@@ -156,7 +201,7 @@ existing = {line.strip() for line in result.stdout.splitlines() if line.strip() 
 all_seen_ips = set()
 for s in data.get('sessions', []):
     ip = s.get('origin_ip', '')
-    if ':' not in ip and ip not in IGNORE_IPS:
+    if ':' not in ip and ip not in IGNORE_IPS and not is_safe_ip(ip):
         all_seen_ips.add(ip)
 unknown_ips = all_seen_ips - block_ips - scanner_ips - existing
 
@@ -185,6 +230,11 @@ new_abusive = block_ips - existing
 for ip in new_abusive:
     subprocess.run(['ipset', 'add', ipset_abusive, ip], capture_output=True)
 
+# Ensure safe IPs are never blocked (remove from sets if present)
+for ip in SAFE_IPS:
+    subprocess.run(['ipset', 'del', ipset_abusive, ip], capture_output=True)
+    subprocess.run(['ipset', 'del', ipset_scanners, ip], capture_output=True)
+
 # Persist first-seen block timestamp for newly blocked IPs
 try:
     block_history = {}
@@ -195,6 +245,10 @@ try:
                 block_history = loaded
 
     blocked_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    # Remove safe IPs from persisted history to avoid stale blocked metadata in analyzer output
+    for ip in SAFE_IPS:
+        block_history.pop(ip, None)
+
     # Record metadata for currently detected blocked IPs so reasons are available
     # even for IPs that were already present in ipset before this script version.
     for ip in sorted(block_ips):

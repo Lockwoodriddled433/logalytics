@@ -307,6 +307,43 @@ The dashboard is data-source agnostic. You can generate `data.json` from any web
 5. Identify notable organizations via rDNS and ASN lookup
 6. Output the JSON structure above
 
+### Malicious path rules (`malicious_paths.txt`)
+
+`scripts/log_analyze.py` supports both literal paths and regex rules:
+
+- **Literal path** (exact match after normalization):
+  - `/wp-login.php`
+- **Regex rule** (case-insensitive):
+  - `re:^/wp-.*`
+  - `re:wp-includes`
+  - `re:\\.env($|/)`
+
+Literal path normalization rules (for add/remove):
+- trims surrounding whitespace
+- collapses duplicate slashes (`//` → `/`)
+- auto-adds a leading slash if missing (`wp-login.php` → `/wp-login.php`)
+- preserves trailing slash (`/admin/` stays `/admin/`)
+
+You can add rules from CLI:
+
+- Add literal path (with confirmation prompt):
+  - `python3 scripts/log_analyze.py --add-malicious-path /@vite/env`
+- Add regex rule:
+  - `python3 scripts/log_analyze.py --add-malicious-path '^/wp-.*' --regex`
+- Example: match any path containing `wp-includes`:
+  - `python3 scripts/log_analyze.py --add-malicious-path 'wp-includes' --regex`
+- Skip confirmation (automation):
+  - `python3 scripts/log_analyze.py --add-malicious-path '^/wp-.*' --regex --yes`
+
+You can also remove rules:
+
+- Remove literal path:
+  - `python3 scripts/log_analyze.py --remove-malicious-path /@vite/env`
+- Remove regex rule:
+  - `python3 scripts/log_analyze.py --remove-malicious-path '^/wp-.*' --regex`
+- Skip confirmation:
+  - `python3 scripts/log_analyze.py --remove-malicious-path '^/wp-.*' --regex --yes`
+
 ### MaxMind GeoIP Enrichment
 
 If you are building your own parser in Python, we recommend using the free [GeoLite2 databases](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). You will need the `geoip2` Python library to read these databases.

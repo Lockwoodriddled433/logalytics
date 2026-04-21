@@ -113,13 +113,30 @@ def load_bots():
     return []
 
 def load_malicious_paths():
+    literal_paths = set()
+    regex_paths = []
     try:
         if os.path.exists(MALICIOUS_FILE):
             with open(MALICIOUS_FILE, 'r') as f:
-                return set(line.strip() for line in f if line.strip() and not line.startswith('#'))
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+
+                    if line.startswith('re:'):
+                        pattern = line[3:].strip()
+                        if not pattern:
+                            continue
+                        try:
+                            regex_paths.append((pattern, re.compile(pattern, re.IGNORECASE)))
+                        except re.error as e:
+                            print(f"Warning: Invalid malicious regex '{pattern}': {e}")
+                        continue
+
+                    literal_paths.add(normalize_malicious_path(line))
     except Exception as e:
         print(f"Warning: Could not load malicious_paths.txt: {e}")
-    return set()
+    return literal_paths, regex_paths
 
 def save_malicious_path(path):
     os.makedirs(os.path.dirname(MALICIOUS_FILE), exist_ok=True)
@@ -127,6 +144,11 @@ def save_malicious_path(path):
         f.write(f"{path}\n")
 
 def normalize_malicious_path(value):
+    # Canonicalization rules for literal path entries:
+    # - trim outer whitespace
+    # - collapse duplicate slashes
+    # - ensure a leading slash
+    # - preserve trailing slash (except for root path normalization)
     path = normalize_path((value or '').strip())
     if not path:
         return ''
@@ -138,31 +160,123 @@ def confirm_add_malicious_path(path):
     warning = (
         "WARNING: Adding a malicious path can increase false positives and may block legitimate traffic.\n"
         f"Path to add: {path}\n"
-        "Type 'yes' to confirm: "
+        "Proceed? [y/N]: "
     )
     try:
         answer = input(warning)
     except EOFError:
         return False
-    return answer.strip().lower() == 'yes'
+    return answer.strip().lower() in ('y', 'yes')
 
-def add_malicious_path(path, force=False):
-    normalized_path = normalize_malicious_path(path)
-    if not normalized_path:
-        print("Error: --add-malicious-path requires a non-empty path value.", file=sys.stderr)
-        return 1
+def is_malicious_path_match(path, literal_paths, regex_paths):
+    if path in literal_paths:
+        return True
+    return any(rx.search(path) for _, rx in regex_paths)
 
-    existing = load_malicious_paths()
-    if normalized_path in existing:
-        print(f"No change: path already exists in malicious list: {normalized_path}")
-        return 0
+def add_malicious_path(path, force=False, as_regex=False):
+    if as_regex:
+        pattern = (path or '').strip()
+        if not pattern:
+            print("Error: --add-malicious-path requires a non-empty regex when --regex is used.", file=sys.stderr)
+            return 1
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            print(f"Error: invalid regex pattern '{pattern}': {e}", file=sys.stderr)
+            return 1
 
-    if not force and not confirm_add_malicious_path(normalized_path):
+        literal_paths, regex_paths = load_malicious_paths()
+        if any(existing_pattern == pattern for existing_pattern, _ in regex_paths):
+            print(f"No change: regex already exists in malicious list: re:{pattern}")
+            return 0
+
+        entry = f"re:{pattern}"
+        display_value = f"regex {pattern}"
+    else:
+        normalized_path = normalize_malicious_path(path)
+        if not normalized_path:
+            print("Error: --add-malicious-path requires a non-empty path value.", file=sys.stderr)
+            return 1
+
+        literal_paths, _ = load_malicious_paths()
+        if normalized_path in literal_paths:
+            print(f"No change: path already exists in malicious list: {normalized_path}")
+            return 0
+
+        entry = normalized_path
+        display_value = normalized_path
+
+    if not force and not confirm_add_malicious_path(display_value):
         print("Aborted: malicious path was not added.", file=sys.stderr)
         return 1
 
-    save_malicious_path(normalized_path)
-    print(f"Added malicious path: {normalized_path}")
+    save_malicious_path(entry)
+    print(f"Added malicious path: {entry}")
+    return 0
+
+def remove_malicious_path(path, force=False, as_regex=False):
+    if as_regex:
+        pattern = (path or '').strip()
+        if not pattern:
+            print("Error: --remove-malicious-path requires a non-empty regex when --regex is used.", file=sys.stderr)
+            return 1
+        target_entry = f"re:{pattern}"
+        display_value = f"regex {pattern}"
+    else:
+        normalized_path = normalize_malicious_path(path)
+        if not normalized_path:
+            print("Error: --remove-malicious-path requires a non-empty path value.", file=sys.stderr)
+            return 1
+        target_entry = normalized_path
+        display_value = normalized_path
+
+    if not os.path.exists(MALICIOUS_FILE):
+        print("No change: malicious path list file does not exist.")
+        return 0
+
+    try:
+        with open(MALICIOUS_FILE, 'r') as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"Error: could not read malicious paths file: {e}", file=sys.stderr)
+        return 1
+
+    removed = False
+    updated_lines = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith('#'):
+            updated_lines.append(raw)
+            continue
+
+        if as_regex:
+            if stripped == target_entry:
+                removed = True
+                continue
+            updated_lines.append(raw)
+        else:
+            normalized_existing = normalize_malicious_path(stripped) if not stripped.startswith('re:') else None
+            if normalized_existing == target_entry:
+                removed = True
+                continue
+            updated_lines.append(raw)
+
+    if not removed:
+        print(f"No change: entry not found: {target_entry}")
+        return 0
+
+    if not force and not confirm_add_malicious_path(f"REMOVE {display_value}"):
+        print("Aborted: malicious path was not removed.", file=sys.stderr)
+        return 1
+
+    try:
+        with open(MALICIOUS_FILE, 'w') as f:
+            f.writelines(updated_lines)
+    except Exception as e:
+        print(f"Error: could not write malicious paths file: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Removed malicious path: {target_entry}")
     return 0
 
 def load_abusive_ips():
@@ -415,6 +529,19 @@ def top_path_items(path_stats, limit):
         return items[:limit]
     return items
 
+def format_top_path_line(path, stats):
+    line = (
+        f"  - {path}: hits={stats['hits']} sessions={len(stats['sessions'])} "
+        f"ips={len(stats['ips'])}"
+    )
+
+    blocked_sessions = len(stats['blocked_sessions'])
+    blocked_ips = len(stats['blocked_ips'])
+    if blocked_sessions > 0 or blocked_ips > 0:
+        line += f" blocked_sessions={blocked_sessions} blocked_ips={blocked_ips}"
+
+    return line
+
 def parse_args():
     parser = argparse.ArgumentParser(
         prog='log_analyze.py',
@@ -432,21 +559,39 @@ def parse_args():
         dest='add_malicious_path',
         type=str,
         default=None,
-        help='Manually add a path to malicious_paths.txt and exit.'
+        help='Manually add a malicious rule and exit. Literal paths are normalized (trim, collapse //, ensure leading /, keep trailing /).'
+    )
+    parser.add_argument(
+        '--remove-malicious-path',
+        dest='remove_malicious_path',
+        type=str,
+        default=None,
+        help='Remove a malicious rule and exit. Uses the same normalization rules as add for literal paths.'
     )
     parser.add_argument(
         '--yes',
         dest='yes',
         action='store_true',
-        help='Skip confirmation prompt when using --add-malicious-path.'
+        help='Skip confirmation prompt when using add/remove malicious path commands.'
     )
-    return parser.parse_args()
+    parser.add_argument(
+        '--regex',
+        dest='regex',
+        action='store_true',
+        help="Treat add/remove malicious path value as regex and store/match it as 're:<pattern>'."
+    )
+    args = parser.parse_args()
+
+    if args.add_malicious_path is not None and args.remove_malicious_path is not None:
+        parser.error('Use either --add-malicious-path or --remove-malicious-path, not both.')
+
+    return args
 
 def analyze(top_paths=10):
     top_paths = max(0, int(top_paths))
     progress('Initializing analysis')
     bot_regexes = load_bots()
-    malicious_paths_list = load_malicious_paths()
+    malicious_literal_paths, malicious_regex_paths = load_malicious_paths()
     block_history = load_block_history()
     dns_cache = load_dns_cache()
     progress('Loaded persistent DNS cache', len(dns_cache))
@@ -537,7 +682,7 @@ def analyze(top_paths=10):
                     block_meta = block_history.get(origin_ip, {})
                     is_blocked_origin = bool(block_meta.get('blocked_at') or block_meta.get('block_reason'))
 
-                    is_malicious_path = (path in malicious_paths_list) or bool(MALICIOUS_PATHS_FALLBACK.search(path))
+                    is_malicious_path = is_malicious_path_match(path, malicious_literal_paths, malicious_regex_paths) or bool(MALICIOUS_PATHS_FALLBACK.search(path))
                     if is_malicious_path:
                         update_path_stats(malicious_path_stats, path, s_key, origin_ip, is_blocked_origin)
                     else:
@@ -626,7 +771,7 @@ def analyze(top_paths=10):
                                     bool(CENSUS_BOT_PATTERN.search(ip_cache[origin_ip]['hostname'] or ''))
 
                     is_malicious = (status >= 400 and not ip_cache[origin_ip]['is_bot']) or \
-                                  (path in malicious_paths_list) or \
+                                  is_malicious_path_match(path, malicious_literal_paths, malicious_regex_paths) or \
                                   bool(MALICIOUS_PATHS_FALLBACK.search(path)) or \
                                   (c_code in ['RU', 'BY']) or \
                                   is_census_bot
@@ -723,20 +868,12 @@ def analyze(top_paths=10):
     if top_paths > 0 and top_malicious_paths:
         print("Top malicious paths:")
         for path, stats in top_malicious_paths:
-            print(
-                f"  - {path}: hits={stats['hits']} sessions={len(stats['sessions'])} "
-                f"ips={len(stats['ips'])} blocked_sessions={len(stats['blocked_sessions'])} "
-                f"blocked_ips={len(stats['blocked_ips'])}"
-            )
+            print(format_top_path_line(path, stats))
     print(f"Security stats: non_malicious_paths_seen={non_malicious_paths_seen} unique_non_malicious_paths={len(non_malicious_path_stats)}")
     if top_paths > 0 and top_non_malicious_paths:
         print("Top non-malicious paths:")
         for path, stats in top_non_malicious_paths:
-            print(
-                f"  - {path}: hits={stats['hits']} sessions={len(stats['sessions'])} "
-                f"ips={len(stats['ips'])} blocked_sessions={len(stats['blocked_sessions'])} "
-                f"blocked_ips={len(stats['blocked_ips'])}"
-            )
+            print(format_top_path_line(path, stats))
     print(f"Blocked stats: blocked_paths={blocked_paths} blocked_ips={blocked_ips} blocked_sessions={blocked_sessions}")
 
     print(f"Analysis complete. {len(final_sessions)} clustered sessions from {len(ip_cache)} unique origin IPs.")
@@ -744,5 +881,7 @@ def analyze(top_paths=10):
 if __name__ == '__main__':
     args = parse_args()
     if args.add_malicious_path is not None:
-        raise SystemExit(add_malicious_path(args.add_malicious_path, force=args.yes))
+        raise SystemExit(add_malicious_path(args.add_malicious_path, force=args.yes, as_regex=args.regex))
+    if args.remove_malicious_path is not None:
+        raise SystemExit(remove_malicious_path(args.remove_malicious_path, force=args.yes, as_regex=args.regex))
     analyze(top_paths=args.top_paths)
