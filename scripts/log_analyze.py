@@ -360,6 +360,7 @@ def analyze():
     country_ips = {}
     sessions = {}
     malicious_path_hits = Counter()
+    non_malicious_path_hits = Counter()
 
     try:
         city_reader = maxminddb.open_database(MMDB_FILE)
@@ -436,8 +437,11 @@ def analyze():
                     ts = parse_time(data['time'])
                     status = int(data['status'])
 
-                    if (path in malicious_paths_list) or bool(MALICIOUS_PATHS_FALLBACK.search(path)):
+                    is_malicious_path = (path in malicious_paths_list) or bool(MALICIOUS_PATHS_FALLBACK.search(path))
+                    if is_malicious_path:
                         malicious_path_hits[path] += 1
+                    else:
+                        non_malicious_path_hits[path] += 1
                     
                     if origin_ip not in ip_cache or ip_cache[origin_ip].get('partial'):
                         geo_data = city_reader.get(origin_ip)
@@ -606,11 +610,17 @@ def analyze():
     blocked_sessions = sum(1 for s in final_sessions if s.get('blocked_at') or s.get('block_reason'))
     blocked_ips = len({s.get('origin_ip') for s in final_sessions if s.get('blocked_at') or s.get('block_reason')})
     top_malicious_paths = malicious_path_hits.most_common(10)
+    top_non_malicious_paths = non_malicious_path_hits.most_common(10)
 
     print(f"Security stats: malicious_paths_seen={sum(malicious_path_hits.values())} unique_malicious_paths={len(malicious_path_hits)}")
     if top_malicious_paths:
         print("Top malicious paths:")
         for path, hits in top_malicious_paths:
+            print(f"  - {path}: {hits}")
+    print(f"Security stats: non_malicious_paths_seen={sum(non_malicious_path_hits.values())} unique_non_malicious_paths={len(non_malicious_path_hits)}")
+    if top_non_malicious_paths:
+        print("Top non-malicious paths:")
+        for path, hits in top_non_malicious_paths:
             print(f"  - {path}: {hits}")
     print(f"Blocked stats: blocked_ips={blocked_ips} blocked_sessions={blocked_sessions}")
 

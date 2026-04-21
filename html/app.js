@@ -659,7 +659,74 @@ function renderIpDetailTable(ipList) {
     </table>`;
 }
 
+function addToggleAllButton(container, rowClass, detailClass, isInitiallyExpanded, onExpand, getIpsFn) {
+    const wrap = document.createElement('div');
+    wrap.style.display = 'flex';
+    wrap.style.justifyContent = 'flex-end';
+    wrap.style.gap = '8px';
+    wrap.style.marginBottom = '12px';
+
+    if (getIpsFn) {
+        const copyBtn = document.createElement('button');
+        copyBtn.innerHTML = '<i data-lucide="copy" style="width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;"></i>Copy All IPs';
+        copyBtn.style.cssText = 'background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); color: var(--text-primary); padding: 4px 12px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.2s; font-weight: 500; font-family: inherit; display: inline-flex; align-items: center;';
+        copyBtn.addEventListener('mouseover', () => copyBtn.style.background = 'rgba(255,255,255,0.15)');
+        copyBtn.addEventListener('mouseout', () => copyBtn.style.background = 'rgba(255,255,255,0.1)');
+        copyBtn.addEventListener('click', () => {
+            const ips = getIpsFn();
+            if (ips && ips.length > 0) {
+                navigator.clipboard.writeText(ips.join('\n')).then(() => {
+                    const originalHtml = copyBtn.innerHTML;
+                    copyBtn.innerHTML = '<i data-lucide="check" style="width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; color: #22c55e;"></i>Copied!';
+                    if (window.lucide) lucide.createIcons();
+                    setTimeout(() => { copyBtn.innerHTML = originalHtml; if (window.lucide) lucide.createIcons(); }, 2000);
+                });
+            }
+        });
+        wrap.appendChild(copyBtn);
+    }
+
+    const btn = document.createElement('button');
+    let expanded = isInitiallyExpanded;
+    btn.innerHTML = `<i data-lucide="${expanded ? 'fold-vertical' : 'unfold-vertical'}" style="width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;"></i>${expanded ? 'Collapse All' : 'Expand All'}`;
+    btn.style.cssText = 'background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); color: var(--text-primary); padding: 4px 12px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.2s; font-weight: 500; font-family: inherit; display: inline-flex; align-items: center;';
+    
+    btn.addEventListener('mouseover', () => btn.style.background = 'rgba(255,255,255,0.15)');
+    btn.addEventListener('mouseout', () => btn.style.background = 'rgba(255,255,255,0.1)');
+
+    btn.addEventListener('click', () => {
+        expanded = !expanded;
+        btn.innerHTML = `<i data-lucide="${expanded ? 'fold-vertical' : 'unfold-vertical'}" style="width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;"></i>${expanded ? 'Collapse All' : 'Expand All'}`;
+        if (window.lucide) lucide.createIcons();
+        container.querySelectorAll(rowClass).forEach(row => {
+            const detail = row.querySelector(detailClass);
+            if (!detail) return;
+            if (expanded && onExpand) {
+                onExpand(row, detail);
+            }
+            detail.style.display = expanded ? 'block' : 'none';
+        });
+    });
+
+    wrap.appendChild(btn);
+    container.insertBefore(wrap, container.firstChild);
+    if (window.lucide) lucide.createIcons();
+}
+
 function attachDrillDown(container) {
+    addToggleAllButton(container, '.notable-row', '.notable-detail', true, (row, detail) => {
+        if (!detail.innerHTML) {
+            const ips = row.dataset.ips.split(',').filter(Boolean);
+            detail.innerHTML = renderIpDetailTable(ips);
+        }
+    }, () => {
+        const ips = new Set();
+        container.querySelectorAll('.notable-row').forEach(row => {
+            if (row.dataset.ips) row.dataset.ips.split(',').filter(Boolean).forEach(ip => ips.add(ip));
+        });
+        return Array.from(ips);
+    });
+
     container.querySelectorAll('.notable-row').forEach(row => {
         const detail = row.querySelector('.notable-detail');
         const ips = row.dataset.ips.split(',').filter(Boolean);
@@ -667,6 +734,7 @@ function attachDrillDown(container) {
         const expand = () => {
             if (!detail) return;
             detail.innerHTML = renderIpDetailTable(ips);
+            if (!detail.innerHTML) detail.innerHTML = renderIpDetailTable(ips);
             detail.style.display = 'block';
         };
 
@@ -936,6 +1004,23 @@ function renderPathIpDetailTable(path) {
 }
 
 function attachPathDrillDown(container) {
+    addToggleAllButton(container, '.path-row', '.path-detail', true, (row, detail) => {
+        if (!detail.innerHTML) {
+            const encodedPath = row.dataset.path || '';
+            const path = decodeURIComponent(encodedPath);
+            detail.innerHTML = renderPathIpDetailTable(path);
+        }
+    }, () => {
+        const ips = new Set();
+        container.querySelectorAll('.path-row').forEach(row => {
+            const path = decodeURIComponent(row.dataset.path || '');
+            filteredSessions.forEach(s => {
+                if ((s.path_summary || []).includes(path)) ips.add(s.origin_ip);
+            });
+        });
+        return Array.from(ips);
+    });
+
     container.querySelectorAll('.path-row').forEach((row) => {
         const detail = row.querySelector('.path-detail');
         if (!detail) return;
@@ -944,6 +1029,11 @@ function attachPathDrillDown(container) {
             const encodedPath = row.dataset.path || '';
             const path = decodeURIComponent(encodedPath);
             detail.innerHTML = renderPathIpDetailTable(path);
+            if (!detail.innerHTML) {
+                const encodedPath = row.dataset.path || '';
+                const path = decodeURIComponent(encodedPath);
+                detail.innerHTML = renderPathIpDetailTable(path);
+            }
             detail.style.display = 'block';
         };
 
@@ -1131,8 +1221,29 @@ function setupEvents() {
             </div>`;
         }).join('');
 
+        addToggleAllButton(body, '.country-row', '.country-detail', false, (row, detail) => {
+            if (!detail.innerHTML) {
+                const code = row.dataset.code;
+                const countryIps = [...new Set(filteredSessions.filter(s => (s.geo.country_code || '??') === code).map(s => s.origin_ip))];
+                detail.innerHTML = renderIpDetailTable(countryIps);
+            }
+        }, () => {
+            const ips = new Set();
+            body.querySelectorAll('.country-row').forEach(row => {
+                const code = row.dataset.code;
+                filteredSessions.forEach(s => {
+                    if ((s.geo.country_code || '??') === code) ips.add(s.origin_ip);
+                });
+            });
+            return Array.from(ips);
+        });
+
         body.querySelectorAll('.country-row').forEach(row => {
-            row.addEventListener('click', () => {
+            row.addEventListener('click', (e) => {
+                if (e.target.closest('a')) return;
+                const selectedText = window.getSelection ? window.getSelection().toString() : '';
+                if (selectedText && selectedText.trim().length > 0) return;
+
                 const detail = row.querySelector('.country-detail');
                 if (detail.style.display !== 'none') {
                     detail.style.display = 'none';
@@ -1141,6 +1252,11 @@ function setupEvents() {
                 const code = row.dataset.code;
                 const countryIps = [...new Set(filteredSessions.filter(s => (s.geo.country_code || '??') === code).map(s => s.origin_ip))];
                 detail.innerHTML = renderIpDetailTable(countryIps);
+                if (!detail.innerHTML) {
+                    const code = row.dataset.code;
+                    const countryIps = [...new Set(filteredSessions.filter(s => (s.geo.country_code || '??') === code).map(s => s.origin_ip))];
+                    detail.innerHTML = renderIpDetailTable(countryIps);
+                }
                 detail.style.display = 'block';
             });
         });
